@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: shipshape
+      POSTGRES_USER: shipshape
+      POSTGRES_PASSWORD: shipshape
+    volumes:
+      - shipshape-postgres:/var/lib/postgresql/data
+
+  shipshape-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: postgres://shipshape:shipshape@postgres:5432/shipshape
+      SHIPSHAPE_TOKEN_KEYS: ${SHIPSHAPE_TOKEN_KEYS:?set SHIPSHAPE_TOKEN_KEYS in your environment}
+      SHIPSHAPE_UI_ORIGINS: ${SHIPSHAPE_UI_ORIGINS:-http://localhost:4200}
+      SHIPSHAPE_UI_URL: ${SHIPSHAPE_UI_URL:-http://localhost:4200}
+    ports:
+      - "8080:8080"
+
+volumes:
+  shipshape-postgres:

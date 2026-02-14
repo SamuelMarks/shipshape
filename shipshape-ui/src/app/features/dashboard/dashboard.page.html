@@ -3,7 +3,8 @@
     <span class="page-eyebrow">Fleet intelligence</span>
     <h1 class="page-title">Command the ShipShape fleet</h1>
     <p class="page-subtitle">
-      Monitor audit coverage, refit momentum, and CI readiness across every vessel in the fleet.
+      Monitor audit coverage, refit momentum, and CI readiness across every
+      vessel in the fleet.
     </p>
   </div>
 
@@ -44,13 +45,13 @@
     </div>
     <div class="metric-grid">
       @for (metric of metrics(); track metric.label) {
-        <shipshape-metric-card
-          [label]="metric.label"
-          [value]="metric.value"
-          [trend]="metric.trend ?? null"
-          [detail]="metric.detail ?? null"
-          [tone]="metric.tone"
-        ></shipshape-metric-card>
+      <shipshape-metric-card
+        [label]="metric.label"
+        [value]="metric.value"
+        [trend]="metric.trend ?? null"
+        [detail]="metric.detail ?? null"
+        [tone]="metric.tone"
+      ></shipshape-metric-card>
       }
     </div>
   </section>
@@ -63,21 +64,21 @@
       </div>
       <div class="vessel-list" role="list">
         @for (vessel of vessels(); track vessel.id) {
-          <div class="vessel-row" role="listitem">
-            <div class="vessel-meta">
-              <span class="vessel-name">{{ vessel.name }}</span>
-              <span class="vessel-id">{{ vessel.id }}</span>
-            </div>
-            <div class="vessel-metrics">
-              <span class="vessel-score">Health {{ vessel.healthScore }}</span>
-              <span class="vessel-risk">Coverage {{ vessel.coverageRisk }}</span>
-              <span class="vessel-run">{{ vessel.lastRun }}</span>
-            </div>
-            <shipshape-status-pill
-              [label]="vessel.statusLabel"
-              [tone]="vessel.tone"
-            ></shipshape-status-pill>
+        <div class="vessel-row" role="listitem">
+          <div class="vessel-meta">
+            <span class="vessel-name">{{ vessel.name }}</span>
+            <span class="vessel-id">{{ vessel.id }}</span>
           </div>
+          <div class="vessel-metrics">
+            <span class="vessel-score">Health {{ vessel.healthScore }}</span>
+            <span class="vessel-risk">Coverage {{ vessel.coverageRisk }}</span>
+            <span class="vessel-run">{{ vessel.lastRun }}</span>
+          </div>
+          <shipshape-status-pill
+            [label]="vessel.statusLabel"
+            [tone]="vessel.tone"
+          ></shipshape-status-pill>
+        </div>
         }
       </div>
     </section>
@@ -89,13 +90,16 @@
       </div>
       <div class="alerts-list" role="list">
         @for (alert of alerts(); track alert.id) {
-          <div class="alert-row" role="listitem">
-            <div class="alert-header">
-              <shipshape-status-pill [label]="alert.tone" [tone]="alert.tone"></shipshape-status-pill>
-              <span class="alert-title">{{ alert.title }}</span>
-            </div>
-            <p class="alert-description">{{ alert.description }}</p>
+        <div class="alert-row" role="listitem">
+          <div class="alert-header">
+            <shipshape-status-pill
+              [label]="alert.tone"
+              [tone]="alert.tone"
+            ></shipshape-status-pill>
+            <span class="alert-title">{{ alert.title }}</span>
           </div>
+          <p class="alert-description">{{ alert.description }}</p>
+        </div>
         }
       </div>
     </section>

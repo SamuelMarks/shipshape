@@ -1,0 +1,16 @@
+:host {
+  display: block;
+  height: 100%;
+}
+
+.merge-host {
+  height: 100%;
+}
+
+.merge-host .cm-mergeView {
+  height: 100%;
+}
+
+.merge-host .cm-editor {
+  height: 100%;
+}

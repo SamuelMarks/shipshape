@@ -1,13 +1,18 @@
-import { ChangeDetectionStrategy, Component, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, input } from "@angular/core";
 
-export type MetricTone = 'good' | 'warn' | 'bad' | 'info';
+export type MetricTone = "good" | "warn" | "bad" | "info";
 
 @Component({
-  selector: 'shipshape-metric-card',
+  selector: "shipshape-metric-card",
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="metric-card" [class.is-good]="tone() === 'good'" [class.is-warn]="tone() === 'warn'"
-      [class.is-bad]="tone() === 'bad'" [class.is-info]="tone() === 'info'">
+    <div
+      class="metric-card"
+      [class.is-good]="tone() === 'good'"
+      [class.is-warn]="tone() === 'warn'"
+      [class.is-bad]="tone() === 'bad'"
+      [class.is-info]="tone() === 'info'"
+    >
       <div class="metric-card__header">
         <span class="metric-card__label">{{ label() }}</span>
         @if (trend()) {
@@ -21,13 +26,13 @@ export type MetricTone = 'good' | 'warn' | 'bad' | 'info';
     </div>
   `,
   host: {
-    class: 'metric-card-host'
-  }
+    class: "metric-card-host",
+  },
 })
 export class MetricCardComponent {
   label = input.required<string>();
   value = input.required<string>();
   trend = input<string | null>(null);
   detail = input<string | null>(null);
-  tone = input<MetricTone>('info');
+  tone = input<MetricTone>("info");
 }

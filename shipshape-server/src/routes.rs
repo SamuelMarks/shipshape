@@ -6,6 +6,7 @@ use diesel::prelude::*;
 use diesel::result::OptionalExtension;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, RwLock};
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
@@ -27,6 +28,8 @@ pub struct AppState {
     pub auth: AuthConfig,
     /// Token encryption helper for storing OAuth secrets.
     pub token_cipher: TokenCipher,
+    /// In-memory diff listing and edits.
+    pub diff_store: Arc<RwLock<Vec<DiffFile>>>,
 }
 
 /// Authentication configuration loaded from the environment.
@@ -317,7 +320,7 @@ pub struct BatchRunsResponse {
 }
 
 /// Diff file entry.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffFile {
     /// File path.
@@ -342,6 +345,67 @@ pub struct DiffFile {
 pub struct DiffListingResponse {
     /// Diff files.
     pub files: Vec<DiffFile>,
+}
+
+/// Request payload for updating a diff entry.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffUpdateRequest {
+    /// File path to update.
+    pub path: String,
+    /// Updated modified content.
+    pub modified: String,
+}
+
+/// Response payload for a diff update.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffUpdateResponse {
+    /// Updated diff file entry.
+    pub file: DiffFile,
+}
+
+/// Seed the in-memory diff store with placeholder content.
+pub fn seed_diff_store() -> Arc<RwLock<Vec<DiffFile>>> {
+    Arc::new(RwLock::new(default_diff_files()))
+}
+
+fn default_diff_files() -> Vec<DiffFile> {
+    vec![
+        DiffFile {
+            path: "src/inspector.rs".to_string(),
+            summary: "Added health score heuristics for coverage risk.".to_string(),
+            language: "rust".to_string(),
+            original: "pub fn health_score(report: &FleetReport) -> u8 {\\n  0\\n}\\n"
+                .to_string(),
+            modified: "pub fn health_score(report: &FleetReport) -> u8 {\\n  let mut score = 70;\\n  if report.coverage.low_count > 0 {\\n    score = score.saturating_sub(20);\\n  }\\n  score\\n}\\n"
+                .to_string(),
+            tone: "good".to_string(),
+            status_label: "Modified".to_string(),
+        },
+        DiffFile {
+            path: "src/drydock.rs".to_string(),
+            summary: "Added CMake detection and notebook-only guardrails.".to_string(),
+            language: "rust".to_string(),
+            original: "pub fn detect_stack(files: &[String]) -> Stack {\\n  Stack::Unknown\\n}\\n"
+                .to_string(),
+            modified: "pub fn detect_stack(files: &[String]) -> Stack {\\n  if files.iter().any(|name| name.contains(\"CMakeLists\")) {\\n    return Stack::Cmake;\\n  }\\n  Stack::Unknown\\n}\\n"
+                .to_string(),
+            tone: "warn".to_string(),
+            status_label: "Modified".to_string(),
+        },
+        DiffFile {
+            path: "src/pr_template.rs".to_string(),
+            summary: "Interpolated ShipShape stats into PR templates.".to_string(),
+            language: "rust".to_string(),
+            original: "const SHIPSHAPE_STATS: &str = \"{{SHIPSHAPE_STATS}}\";\\n"
+                .to_string(),
+            modified: "const SHIPSHAPE_STATS: &str = \"{{SHIPSHAPE_STATS}}\";\\nconst SHIPSHAPE_FIXES: &str = \"{{SHIPSHAPE_FIXES}}\";\\n"
+                .to_string(),
+            tone: "info".to_string(),
+            status_label: "Added".to_string(),
+        },
+    ]
 }
 
 /// Mechanic option entry.
@@ -873,42 +937,61 @@ pub async fn diffs(state: web::Data<AppState>, req: HttpRequest) -> impl Respond
     if let Err(response) = require_auth(&state, &req).await {
         return response;
     }
-    let files = vec![
-        DiffFile {
-            path: "src/inspector.rs".to_string(),
-            summary: "Added health score heuristics for coverage risk.".to_string(),
-            language: "rust".to_string(),
-            original: "pub fn health_score(report: &FleetReport) -> u8 {\\n  0\\n}\\n"
-                .to_string(),
-            modified: "pub fn health_score(report: &FleetReport) -> u8 {\\n  let mut score = 70;\\n  if report.coverage.low_count > 0 {\\n    score = score.saturating_sub(20);\\n  }\\n  score\\n}\\n"
-                .to_string(),
-            tone: "good".to_string(),
-            status_label: "Modified".to_string(),
-        },
-        DiffFile {
-            path: "src/drydock.rs".to_string(),
-            summary: "Added CMake detection and notebook-only guardrails.".to_string(),
-            language: "rust".to_string(),
-            original: "pub fn detect_stack(files: &[String]) -> Stack {\\n  Stack::Unknown\\n}\\n"
-                .to_string(),
-            modified: "pub fn detect_stack(files: &[String]) -> Stack {\\n  if files.iter().any(|name| name.contains(\"CMakeLists\")) {\\n    return Stack::Cmake;\\n  }\\n  Stack::Unknown\\n}\\n"
-                .to_string(),
-            tone: "warn".to_string(),
-            status_label: "Modified".to_string(),
-        },
-        DiffFile {
-            path: "src/pr_template.rs".to_string(),
-            summary: "Interpolated ShipShape stats into PR templates.".to_string(),
-            language: "rust".to_string(),
-            original: "const SHIPSHAPE_STATS: &str = \"{{SHIPSHAPE_STATS}}\";\\n"
-                .to_string(),
-            modified: "const SHIPSHAPE_STATS: &str = \"{{SHIPSHAPE_STATS}}\";\\nconst SHIPSHAPE_FIXES: &str = \"{{SHIPSHAPE_FIXES}}\";\\n"
-                .to_string(),
-            tone: "info".to_string(),
-            status_label: "Added".to_string(),
-        },
-    ];
+    let files = match state.diff_store.read() {
+        Ok(store) => store.clone(),
+        Err(_) => {
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                message: "diff store unavailable".to_string(),
+            });
+        }
+    };
     HttpResponse::Ok().json(DiffListingResponse { files })
+}
+
+#[utoipa::path(
+    post,
+    path = "/diffs",
+    request_body = DiffUpdateRequest,
+    responses(
+        (status = 200, description = "Diff update", body = DiffUpdateResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Diff not found", body = ErrorResponse)
+    ),
+    tag = "diffs"
+)]
+#[post("/diffs")]
+/// Update a diff entry.
+pub async fn diff_update(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    payload: web::Json<DiffUpdateRequest>,
+) -> impl Responder {
+    if let Err(response) = require_auth(&state, &req).await {
+        return response;
+    }
+    if payload.path.trim().is_empty() {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            message: "diff path is required".to_string(),
+        });
+    }
+    let mut store = match state.diff_store.write() {
+        Ok(store) => store,
+        Err(_) => {
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                message: "diff store unavailable".to_string(),
+            });
+        }
+    };
+    if let Some(entry) = store.iter_mut().find(|file| file.path == payload.path) {
+        entry.modified = payload.modified.clone();
+        return HttpResponse::Ok().json(DiffUpdateResponse {
+            file: entry.clone(),
+        });
+    }
+    HttpResponse::NotFound().json(ErrorResponse {
+        message: "diff file not found".to_string(),
+    })
 }
 
 #[utoipa::path(
@@ -1196,7 +1279,7 @@ pub async fn openapi_json() -> impl Responder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::{App, test};
+    use actix_web::{App, http::StatusCode, test};
     use httpmock::Method::GET;
     use httpmock::Method::POST;
     use httpmock::MockServer;
@@ -1228,13 +1311,13 @@ mod tests {
     fn build_state(auth: AuthConfig) -> TestApp {
         let mut test_db = TestDatabase::new();
         let pool = test_db.pool();
-        let token_cipher =
-            TokenCipher::from_base64_keys([TEST_TOKEN_KEY]).expect("token cipher");
+        let token_cipher = TokenCipher::from_base64_keys([TEST_TOKEN_KEY]).expect("token cipher");
         let state = web::Data::new(AppState {
             pool,
             workflow: WorkflowService::mock(),
             auth,
             token_cipher,
+            diff_store: seed_diff_store(),
         });
         TestApp {
             state,
@@ -1304,6 +1387,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1353,6 +1437,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1412,6 +1497,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1465,6 +1551,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1532,6 +1619,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1575,6 +1663,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1624,6 +1713,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1660,6 +1750,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1689,6 +1780,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1721,6 +1813,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1755,6 +1848,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1789,6 +1883,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1824,6 +1919,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1858,6 +1954,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1878,6 +1975,144 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn diff_update_persists_modified_content() {
+        let test_app = test_state();
+        let state = test_app.state.clone();
+        let session = seed_session(&state.pool, &state.token_cipher);
+        let app = test::init_service(
+            App::new()
+                .app_data(state.clone())
+                .service(auth_config)
+                .service(auth_github)
+                .service(auth_github_token)
+                .service(auth_me)
+                .service(dashboard)
+                .service(batch_runs)
+                .service(diffs)
+                .service(diff_update)
+                .service(control_options)
+                .service(control_queue)
+                .service(voyage_board)
+                .service(vessel_diagnostics)
+                .service(vessel_refit)
+                .service(vessel_workflow)
+                .service(voyage_launch)
+                .service(openapi_json),
+        )
+        .await;
+        let payload = DiffUpdateRequest {
+            path: "src/inspector.rs".to_string(),
+            modified: "pub fn health_score(report: &FleetReport) -> u8 {\\n  42\\n}\\n".to_string(),
+        };
+        let req = test::TestRequest::post()
+            .uri("/diffs")
+            .insert_header(auth_header(&session))
+            .set_json(&payload)
+            .to_request();
+        let resp: DiffUpdateResponse = test::call_and_read_body_json(&app, req).await;
+
+        assert_eq!(resp.file.path, "src/inspector.rs");
+        assert!(resp.file.modified.contains("42"));
+
+        let req = test::TestRequest::get()
+            .uri("/diffs")
+            .insert_header(auth_header(&session))
+            .to_request();
+        let listing: DiffListingResponse = test::call_and_read_body_json(&app, req).await;
+        let updated = listing
+            .files
+            .iter()
+            .find(|file| file.path == "src/inspector.rs")
+            .expect("diff file");
+
+        assert_eq!(updated.modified, payload.modified);
+    }
+
+    #[actix_web::test]
+    async fn diff_update_rejects_empty_path() {
+        let test_app = test_state();
+        let state = test_app.state.clone();
+        let session = seed_session(&state.pool, &state.token_cipher);
+        let app = test::init_service(
+            App::new()
+                .app_data(state.clone())
+                .service(auth_config)
+                .service(auth_github)
+                .service(auth_github_token)
+                .service(auth_me)
+                .service(dashboard)
+                .service(batch_runs)
+                .service(diffs)
+                .service(diff_update)
+                .service(control_options)
+                .service(control_queue)
+                .service(voyage_board)
+                .service(vessel_diagnostics)
+                .service(vessel_refit)
+                .service(vessel_workflow)
+                .service(voyage_launch)
+                .service(openapi_json),
+        )
+        .await;
+        let payload = DiffUpdateRequest {
+            path: "  ".to_string(),
+            modified: "noop".to_string(),
+        };
+        let req = test::TestRequest::post()
+            .uri("/diffs")
+            .insert_header(auth_header(&session))
+            .set_json(&payload)
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: ErrorResponse = test::read_body_json(resp).await;
+        assert!(body.message.contains("diff path"));
+    }
+
+    #[actix_web::test]
+    async fn diff_update_returns_not_found() {
+        let test_app = test_state();
+        let state = test_app.state.clone();
+        let session = seed_session(&state.pool, &state.token_cipher);
+        let app = test::init_service(
+            App::new()
+                .app_data(state.clone())
+                .service(auth_config)
+                .service(auth_github)
+                .service(auth_github_token)
+                .service(auth_me)
+                .service(dashboard)
+                .service(batch_runs)
+                .service(diffs)
+                .service(diff_update)
+                .service(control_options)
+                .service(control_queue)
+                .service(voyage_board)
+                .service(vessel_diagnostics)
+                .service(vessel_refit)
+                .service(vessel_workflow)
+                .service(voyage_launch)
+                .service(openapi_json),
+        )
+        .await;
+        let payload = DiffUpdateRequest {
+            path: "missing.rs".to_string(),
+            modified: "noop".to_string(),
+        };
+        let req = test::TestRequest::post()
+            .uri("/diffs")
+            .insert_header(auth_header(&session))
+            .set_json(&payload)
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body: ErrorResponse = test::read_body_json(resp).await;
+        assert!(body.message.contains("not found"));
+    }
+
+    #[actix_web::test]
     async fn control_options_returns_payload() {
         let test_app = test_state();
         let state = test_app.state.clone();
@@ -1892,6 +2127,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1927,6 +2163,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -1969,6 +2206,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -2009,6 +2247,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -2045,6 +2284,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -2082,6 +2322,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -2141,6 +2382,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)
@@ -2178,6 +2420,7 @@ mod tests {
                 .service(dashboard)
                 .service(batch_runs)
                 .service(diffs)
+                .service(diff_update)
                 .service(control_options)
                 .service(control_queue)
                 .service(voyage_board)

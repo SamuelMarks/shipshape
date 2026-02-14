@@ -1,14 +1,20 @@
-import { Injectable, InjectionToken, computed, inject, signal } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
+import {
+  Injectable,
+  InjectionToken,
+  computed,
+  inject,
+  signal,
+} from "@angular/core";
+import { HttpClient } from "@angular/common/http";
+import { firstValueFrom } from "rxjs";
 
-import { API_BASE_URL } from './api.service';
+import { API_BASE_URL } from "./api.service";
 import {
   AuthConfigResponse,
   AuthGithubRequest,
   AuthGithubResponse,
-  AuthUser
-} from './auth.models';
+  AuthUser,
+} from "./auth.models";
 
 export interface AuthStorage {
   getToken(): string | null;
@@ -17,24 +23,24 @@ export interface AuthStorage {
 }
 
 export class LocalStorageAuthStorage implements AuthStorage {
-  private readonly key = 'shipshape.token';
+  private readonly key = "shipshape.token";
 
   getToken(): string | null {
-    if (typeof globalThis.localStorage === 'undefined') {
+    if (typeof globalThis.localStorage === "undefined") {
       return null;
     }
     return globalThis.localStorage.getItem(this.key);
   }
 
   setToken(token: string): void {
-    if (typeof globalThis.localStorage === 'undefined') {
+    if (typeof globalThis.localStorage === "undefined") {
       return;
     }
     globalThis.localStorage.setItem(this.key, token);
   }
 
   clearToken(): void {
-    if (typeof globalThis.localStorage === 'undefined') {
+    if (typeof globalThis.localStorage === "undefined") {
       return;
     }
     globalThis.localStorage.removeItem(this.key);
@@ -45,17 +51,17 @@ export interface WindowRef {
   location: Location;
 }
 
-export const BROWSER_WINDOW = new InjectionToken<WindowRef>('BROWSER_WINDOW', {
-  providedIn: 'root',
-  factory: () => globalThis as WindowRef
+export const BROWSER_WINDOW = new InjectionToken<WindowRef>("BROWSER_WINDOW", {
+  providedIn: "root",
+  factory: () => globalThis as WindowRef,
 });
 
-export const AUTH_STORAGE = new InjectionToken<AuthStorage>('AUTH_STORAGE', {
-  providedIn: 'root',
-  factory: () => new LocalStorageAuthStorage()
+export const AUTH_STORAGE = new InjectionToken<AuthStorage>("AUTH_STORAGE", {
+  providedIn: "root",
+  factory: () => new LocalStorageAuthStorage(),
 });
 
-@Injectable({ providedIn: 'root' })
+@Injectable({ providedIn: "root" })
 export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly baseUrl = inject(API_BASE_URL);
@@ -70,21 +76,24 @@ export class AuthService {
   readonly token = this.tokenSignal.asReadonly();
   readonly hasToken = computed(() => this.tokenSignal() !== null);
   readonly isAuthenticated = computed(
-    () => this.tokenSignal() !== null && this.userSignal() !== null
+    () => this.tokenSignal() !== null && this.userSignal() !== null,
   );
 
   async getLoginUrl(): Promise<string> {
     const config = this.configSignal() ?? (await this.loadConfig());
-    const scope = encodeURIComponent(config.scopes.join(' '));
+    const scope = encodeURIComponent(config.scopes.join(" "));
     const redirect = encodeURIComponent(config.redirectUri);
     const clientId = encodeURIComponent(config.clientId);
     return `${config.authorizeUrl}?client_id=${clientId}&redirect_uri=${redirect}&scope=${scope}`;
   }
 
-  async exchangeCode(code: string, redirectUri?: string): Promise<AuthGithubResponse> {
+  async exchangeCode(
+    code: string,
+    redirectUri?: string,
+  ): Promise<AuthGithubResponse> {
     const payload: AuthGithubRequest = { code, redirectUri };
     const response = await firstValueFrom(
-      this.http.post<AuthGithubResponse>(this.url('/auth/github'), payload)
+      this.http.post<AuthGithubResponse>(this.url("/auth/github"), payload),
     );
     this.tokenSignal.set(response.token);
     this.storage.setToken(response.token);
@@ -99,7 +108,7 @@ export class AuthService {
     }
     try {
       const user = await firstValueFrom(
-        this.http.get<AuthUser>(this.url('/auth/me'))
+        this.http.get<AuthUser>(this.url("/auth/me")),
       );
       this.userSignal.set(user);
       return true;
@@ -124,7 +133,7 @@ export class AuthService {
 
   private async loadConfig(): Promise<AuthConfigResponse> {
     const response = await firstValueFrom(
-      this.http.get<AuthConfigResponse>(this.url('/auth/config'))
+      this.http.get<AuthConfigResponse>(this.url("/auth/config")),
     );
     this.configSignal.set(response);
     return response;

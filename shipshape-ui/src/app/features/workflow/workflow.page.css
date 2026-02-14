@@ -1,0 +1,212 @@
+.workflow-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.8fr) minmax(0, 1.2fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.workflow-column {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.tool-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.tool-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.tool-card input {
+  margin-top: 0.15rem;
+}
+
+.tool-card.is-active {
+  border-color: var(--sea-600);
+  background: var(--surface-strong);
+  box-shadow: var(--glow);
+}
+
+.tool-title {
+  font-weight: 600;
+  display: block;
+}
+
+.tool-detail {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--ink-500);
+  margin-top: 0.2rem;
+}
+
+.change-summary {
+  margin: 0;
+  color: var(--ink-500);
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.workspace-tree {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.filetree {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+
+.filetree-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.5rem;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.filetree-row.is-dir {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-500);
+  font-weight: 600;
+}
+
+.filetree-row.is-file {
+  background: var(--surface);
+  border-color: var(--border);
+  cursor: pointer;
+}
+
+.filetree-row.is-file.is-active {
+  border-color: var(--sea-600);
+  box-shadow: var(--glow);
+  background: var(--surface-strong);
+}
+
+.filetree-name {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.78rem;
+}
+
+.filetree-row.is-dir .filetree-name {
+  font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
+.workspace-editor {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.tab-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.tab-button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tab-button.is-active {
+  background: var(--sea-600);
+  border-color: var(--sea-600);
+  color: #fff;
+  box-shadow: var(--glow);
+}
+
+.editor-shell {
+  height: 100%;
+  min-height: 420px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.editor-shell shipshape-code-editor,
+.editor-shell shipshape-code-merge {
+  display: block;
+  height: 100%;
+}
+
+.docker-actions {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--ink-500);
+}
+
+.console {
+  background: #0b1220;
+  color: #e2e8f0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.8rem;
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  border: 1px solid #1f2937;
+  display: grid;
+  gap: 0.35rem;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.console-line {
+  display: block;
+}
+
+.console-line.is-muted {
+  color: #94a3b8;
+}
+
+.publish-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.empty-note {
+  margin: 0;
+  color: var(--ink-500);
+}
+
+@media (max-width: 1100px) {
+  .workflow-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+}

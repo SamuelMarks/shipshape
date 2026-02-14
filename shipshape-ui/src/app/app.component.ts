@@ -1,27 +1,32 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, inject } from '@angular/core';
-import { NgOptimizedImage } from '@angular/common';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  inject,
+} from "@angular/core";
+import { NgOptimizedImage } from "@angular/common";
 import {
   NavigationEnd,
   Router,
   RouterLink,
   RouterLinkActive,
-  RouterOutlet
-} from '@angular/router';
-import { filter } from 'rxjs/operators';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { DOCUMENT } from '@angular/common';
+  RouterOutlet,
+} from "@angular/router";
+import { filter } from "rxjs/operators";
+import { takeUntilDestroyed } from "@angular/core/rxjs-interop";
+import { DOCUMENT } from "@angular/common";
 
-import { AuthService } from './services/auth.service';
+import { AuthService } from "./services/auth.service";
 
 @Component({
-  selector: 'shipshape-root',
-  templateUrl: './app.component.html',
-  styleUrl: './app.component.css',
+  selector: "shipshape-root",
+  templateUrl: "./app.component.html",
+  styleUrl: "./app.component.css",
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [RouterOutlet, RouterLink, RouterLinkActive, NgOptimizedImage],
   host: {
-    class: 'app-shell'
-  }
+    class: "app-shell",
+  },
 })
 export class AppComponent {
   private readonly router = inject(Router);
@@ -34,38 +39,43 @@ export class AppComponent {
 
   readonly navItems = [
     {
-      path: '/dashboard',
-      label: 'Dashboard',
-      hint: 'Fleet health overview'
+      path: "/dashboard",
+      label: "Dashboard",
+      hint: "Fleet health overview",
     },
     {
-      path: '/batch',
-      label: 'Batch View',
-      hint: 'Parallel audit runs'
+      path: "/batch",
+      label: "Batch View",
+      hint: "Parallel audit runs",
     },
     {
-      path: '/diff',
-      label: 'Diff Viewer',
-      hint: 'Review refit changes'
+      path: "/workflow",
+      label: "Workflow Studio",
+      hint: "Launch new projects",
     },
     {
-      path: '/control',
-      label: 'Control Room',
-      hint: 'Launch workflows'
-    }
+      path: "/diff",
+      label: "Diff Viewer",
+      hint: "Review refit changes",
+    },
+    {
+      path: "/control",
+      label: "Control Room",
+      hint: "Launch workflows",
+    },
   ] as const;
 
   constructor() {
     this.router.events
       .pipe(
         filter((event) => event instanceof NavigationEnd),
-        takeUntilDestroyed(this.destroyRef)
+        takeUntilDestroyed(this.destroyRef),
       )
       .subscribe(() => this.focusMain());
   }
 
   private focusMain(): void {
-    const main = this.document.getElementById('main-content');
+    const main = this.document.getElementById("main-content");
     if (main) {
       main.focus();
     }
@@ -73,6 +83,6 @@ export class AppComponent {
 
   signOut(): void {
     this.auth.signOut();
-    void this.router.navigate(['/login']);
+    void this.router.navigate(["/login"]);
   }
 }

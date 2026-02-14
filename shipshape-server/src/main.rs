@@ -3,8 +3,8 @@
 //!
 //! Hosts HTTP endpoints for voyage coordination and refit workflows.
 
-mod db;
 mod crypto;
+mod db;
 mod models;
 mod openapi;
 mod routes;
@@ -19,14 +19,14 @@ use actix_web::{App, HttpServer, http::header, web};
 use dotenvy::dotenv;
 
 #[cfg(not(test))]
-use crate::db::init_pool;
-#[cfg(not(test))]
 use crate::crypto::TokenCipher;
+#[cfg(not(test))]
+use crate::db::init_pool;
 #[cfg(not(test))]
 use crate::routes::{
     AppState, AuthConfig, auth_config, auth_github, auth_github_token, auth_me, batch_runs,
-    control_options, control_queue, dashboard, diffs, openapi_json, vessel_diagnostics,
-    vessel_refit, vessel_workflow, voyage_board, voyage_launch,
+    control_options, control_queue, dashboard, diff_update, diffs, openapi_json, seed_diff_store,
+    vessel_diagnostics, vessel_refit, vessel_workflow, voyage_board, voyage_launch,
 };
 #[cfg(not(test))]
 use crate::workflows::WorkflowService;
@@ -45,6 +45,7 @@ async fn main() -> std::io::Result<()> {
         workflow,
         auth,
         token_cipher,
+        diff_store: seed_diff_store(),
     });
     let origins = std::env::var("SHIPSHAPE_UI_ORIGINS")
         .unwrap_or_else(|_| "http://127.0.0.1:4200,http://localhost:4200".to_string());
@@ -73,6 +74,7 @@ async fn main() -> std::io::Result<()> {
             .service(dashboard)
             .service(batch_runs)
             .service(diffs)
+            .service(diff_update)
             .service(control_options)
             .service(control_queue)
             .service(voyage_board)

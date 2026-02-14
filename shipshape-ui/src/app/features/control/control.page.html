@@ -3,7 +3,8 @@
     <span class="page-eyebrow">Control room</span>
     <h1 class="page-title">Launch a fleet workflow</h1>
     <p class="page-subtitle">
-      Configure audits, refits, and launch verification before shipping changes to GitHub and GitLab.
+      Configure audits, refits, and launch verification before shipping changes
+      to GitHub and GitLab.
     </p>
   </div>
 
@@ -29,8 +30,10 @@
             type="text"
             formControlName="sourceValue"
             aria-describedby="source-hint"
+          />
+          <span id="source-hint" class="form-hint"
+            >Provide a URL, local path, or directory.</span
           >
-          <span id="source-hint" class="form-hint">Provide a URL, local path, or directory.</span>
         </div>
         <div class="form-field">
           <label for="mode">Mode</label>
@@ -46,31 +49,37 @@
             <option [value]="true">Enabled</option>
             <option [value]="false">Disabled</option>
           </select>
-          <span class="form-hint">When enabled, ShipShape produces patches without applying them.</span>
+          <span class="form-hint"
+            >When enabled, ShipShape produces patches without applying
+            them.</span
+          >
         </div>
 
         <fieldset class="mechanic-set">
           <legend>Mechanics</legend>
           <div class="chip-row">
             @for (mechanic of mechanics(); track mechanic.id) {
-              <button
-                type="button"
-                class="chip-button"
-                [class.is-active]="selectedMechanics().includes(mechanic.id)"
-                [attr.aria-pressed]="selectedMechanics().includes(mechanic.id)"
-                (click)="toggleMechanic(mechanic)"
-              >
-                {{ mechanic.label }}
-              </button>
+            <button
+              type="button"
+              class="chip-button"
+              [class.is-active]="selectedMechanics().includes(mechanic.id)"
+              [attr.aria-pressed]="selectedMechanics().includes(mechanic.id)"
+              (click)="toggleMechanic(mechanic)"
+            >
+              {{ mechanic.label }}
+            </button>
             }
           </div>
           <p class="form-hint">
-            Selected mechanics: <span class="code-inline">{{ selectedMechanics().length }}</span>
+            Selected mechanics:
+            <span class="code-inline">{{ selectedMechanics().length }}</span>
           </p>
         </fieldset>
 
         <div class="form-actions">
-          <button type="button" class="primary-button" (click)="queueRun()">Queue run</button>
+          <button type="button" class="primary-button" (click)="queueRun()">
+            Queue run
+          </button>
           <button type="button" class="ghost-button">Preview plan</button>
         </div>
       </form>
@@ -83,14 +92,17 @@
       </div>
       <div class="activity-list" aria-live="polite">
         @for (entry of activityLog(); track entry.id) {
-          <div class="activity-row">
-            <div class="activity-meta">
-              <shipshape-status-pill [label]="entry.tone" [tone]="entry.tone"></shipshape-status-pill>
-              <span class="activity-title">{{ entry.title }}</span>
-            </div>
-            <p class="activity-detail">{{ entry.detail }}</p>
-            <span class="activity-time">{{ entry.time }}</span>
+        <div class="activity-row">
+          <div class="activity-meta">
+            <shipshape-status-pill
+              [label]="entry.tone"
+              [tone]="entry.tone"
+            ></shipshape-status-pill>
+            <span class="activity-title">{{ entry.title }}</span>
           </div>
+          <p class="activity-detail">{{ entry.detail }}</p>
+          <span class="activity-time">{{ entry.time }}</span>
+        </div>
         }
       </div>
     </section>

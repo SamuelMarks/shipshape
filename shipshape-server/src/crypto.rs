@@ -1,7 +1,7 @@
 //! Token encryption helpers for storing OAuth credentials at rest.
 
-use base64::{engine::general_purpose, Engine as _};
-use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+use base64::{Engine as _, engine::general_purpose};
+use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::sync::Arc;
 

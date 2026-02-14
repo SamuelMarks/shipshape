@@ -1,0 +1,308 @@
+<section class="page">
+  <div class="page-header">
+    <span class="page-eyebrow">Workflow builder</span>
+    <h1 class="page-title">New project launch workflow</h1>
+    <p class="page-subtitle">
+      Stage a repository, run shipshape tools, edit changes, and verify results
+      before forking to GitHub or mirroring to private GitLab.
+    </p>
+  </div>
+
+  <div class="workflow-grid">
+    <div class="workflow-column" [formGroup]="workflowForm">
+      <section class="card" aria-labelledby="workflow-setup-title">
+        <div class="card-header">
+          <h2 id="workflow-setup-title" class="card-title">
+            Step 0-2: Project setup
+          </h2>
+          <span class="tag">Intake</span>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="repo-url">New project URL</label>
+            <input
+              id="repo-url"
+              type="url"
+              formControlName="repoUrl"
+              placeholder="https://github.com/org/repo"
+            />
+            <span class="form-hint"
+              >Step 0: Provide the GitHub repo URL to ingest.</span
+            >
+          </div>
+          <div class="form-field">
+            <label for="fork-target-type">Fork destination</label>
+            <select id="fork-target-type" formControlName="forkTargetType">
+              <option value="org">GitHub org</option>
+              <option value="personal">Personal account</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="fork-target">Fork location</label>
+            <input
+              id="fork-target"
+              type="text"
+              formControlName="forkTarget"
+              placeholder="shipshape"
+            />
+            <span class="form-hint"
+              >Step 1: Choose the GitHub org or personal account.</span
+            >
+          </div>
+          <div class="form-field">
+            <label for="gitlab-namespace">GitLab namespace</label>
+            <input
+              id="gitlab-namespace"
+              type="text"
+              formControlName="gitlabNamespace"
+              placeholder="shipshape-private"
+            />
+          </div>
+          <div class="form-field">
+            <label for="gitlab-project">GitLab mirror project</label>
+            <input
+              id="gitlab-project"
+              type="text"
+              formControlName="gitlabProject"
+              placeholder="fleet-core-mirror"
+            />
+            <span class="form-hint">Step 2: Mirror privately to GitLab.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="clone-title">
+        <div class="card-header">
+          <h2 id="clone-title" class="card-title">Step 3: Clone</h2>
+          <shipshape-status-pill
+            [label]="cloneStatusLabel()"
+            [tone]="cloneStatusTone()"
+          ></shipshape-status-pill>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="clone-path">Clone path</label>
+            <input id="clone-path" type="text" formControlName="clonePath" />
+          </div>
+          <div class="form-actions">
+            <button
+              type="button"
+              class="primary-button"
+              (click)="cloneRepo()"
+              [disabled]="!canClone()"
+            >
+              Clone
+            </button>
+          </div>
+          <p class="form-hint">{{ cloneSummary() }}</p>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="tools-title">
+        <div class="card-header">
+          <h2 id="tools-title" class="card-title">Step 4: Run tool(s)</h2>
+          <shipshape-status-pill
+            [label]="toolsStatusLabel()"
+            [tone]="toolsStatusTone()"
+          ></shipshape-status-pill>
+        </div>
+        <div class="tool-grid">
+          @for (tool of toolOptions; track tool.id) {
+          <label
+            class="tool-card"
+            [class.is-active]="selectedTools().includes(tool.id)"
+          >
+            <input
+              type="checkbox"
+              [checked]="selectedTools().includes(tool.id)"
+              (change)="toggleTool(tool)"
+            />
+            <span>
+              <span class="tool-title">{{ tool.label }}</span>
+              <span class="tool-detail">{{ tool.description }}</span>
+            </span>
+          </label>
+          }
+        </div>
+        <div class="form-actions">
+          <button type="button" class="primary-button" (click)="runTools()">
+            Run tools
+          </button>
+        </div>
+        <p class="form-hint">{{ toolRunSummary() }}</p>
+      </section>
+
+      <section class="card" aria-labelledby="changes-title">
+        <div class="card-header">
+          <h2 id="changes-title" class="card-title">
+            Step 5: Change detection
+          </h2>
+          <span class="tag">{{ files().length }} files</span>
+        </div>
+        @if (toolsStatus() !== 'complete') {
+        <p class="change-summary">Run tools to detect changes.</p>
+        } @else if (showNothingToDo()) {
+        <p class="change-summary">Nothing to do.</p>
+        } @else {
+        <p class="change-summary">
+          {{ files().length }} files changed. Continue to Step 6 to edit and
+          review.
+        </p>
+        }
+      </section>
+
+      <section class="card" aria-labelledby="docker-title">
+        <div class="card-header">
+          <h2 id="docker-title" class="card-title">Step 7: Docker test</h2>
+          <shipshape-status-pill
+            [label]="dockerStatusLabel()"
+            [tone]="dockerStatusTone()"
+          ></shipshape-status-pill>
+        </div>
+        <div class="docker-actions">
+          <button
+            type="button"
+            class="primary-button"
+            (click)="runDockerTest()"
+          >
+            Test with Docker
+          </button>
+          <label class="checkbox-row">
+            <input
+              type="checkbox"
+              [checked]="allowPublishOverride()"
+              (change)="updateOverride($event)"
+            />
+            <span>Step 10: Allow fork + mirror even if tests fail</span>
+          </label>
+        </div>
+        <div class="console" role="log" aria-live="polite">
+          @if (dockerLogs().length === 0) {
+          <span class="console-line is-muted">No Docker output yet.</span>
+          } @else { @for (line of dockerLogs(); track line) {
+          <span class="console-line">{{ line }}</span>
+          } }
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="publish-title">
+        <div class="card-header">
+          <h2 id="publish-title" class="card-title">Step 8-9: Publish</h2>
+          <span class="tag">{{ canPublish() ? 'Ready' : 'Locked' }}</span>
+        </div>
+        @if (canPublish()) {
+        <div class="publish-actions">
+          <button type="button" class="primary-button">
+            {{ forkActionLabel() }}
+          </button>
+          <button type="button" class="primary-button">
+            {{ mirrorActionLabel() }}
+          </button>
+        </div>
+        <p class="form-hint">
+          Push to your selected GitHub and GitLab targets.
+        </p>
+        } @else {
+        <p class="empty-note">
+          Run Docker tests successfully or enable the override to unlock fork +
+          mirror actions.
+        </p>
+        }
+      </section>
+    </div>
+
+    <div class="workflow-column">
+      <section class="card" aria-labelledby="edit-title">
+        <div class="card-header">
+          <h2 id="edit-title" class="card-title">Step 6: Edit + diff review</h2>
+          <span class="tag">
+            @if (selectedFile(); as activeFile) { {{ activeFile.path }} } @else
+            { No file selected }
+          </span>
+        </div>
+
+        @if (toolsStatus() !== 'complete') {
+        <p class="empty-note">Run the toolchain to populate the workspace.</p>
+        } @else if (showNothingToDo()) {
+        <p class="empty-note">No changes to review.</p>
+        } @else {
+        <div class="workspace-grid">
+          <div class="workspace-tree">
+            <div class="card-header">
+              <h3 class="card-title">File tree</h3>
+              <span class="tag">{{ files().length }} files</span>
+            </div>
+            <div class="filetree" role="list">
+              @for (node of fileTree(); track node.id) { @if (node.kind ===
+              'dir') {
+              <div
+                class="filetree-row is-dir"
+                [style.padding-left.px]="node.depth * 14"
+                role="listitem"
+              >
+                <span class="filetree-name">{{ node.label }}</span>
+              </div>
+              } @else {
+              <button
+                type="button"
+                class="filetree-row is-file"
+                [class.is-active]="selectedFile()?.path === node.file?.path"
+                [style.padding-left.px]="node.depth * 14"
+                (click)="selectFile(node.file!)"
+                [attr.aria-pressed]="selectedFile()?.path === node.file?.path"
+                [attr.title]="node.file?.path"
+              >
+                <span class="filetree-name">{{ node.label }}</span>
+                <shipshape-status-pill
+                  [label]="node.file?.statusLabel ?? 'Modified'"
+                  [tone]="node.file?.tone ?? 'info'"
+                ></shipshape-status-pill>
+              </button>
+              } }
+            </div>
+          </div>
+
+          <div class="workspace-editor">
+            <div class="tab-row" role="tablist">
+              <button
+                type="button"
+                class="tab-button"
+                [class.is-active]="activeTab() === 'edit'"
+                (click)="activeTab.set('edit')"
+                role="tab"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                class="tab-button"
+                [class.is-active]="activeTab() === 'diff'"
+                (click)="activeTab.set('diff')"
+                role="tab"
+              >
+                Diff
+              </button>
+            </div>
+            <div class="editor-shell" role="region" aria-label="Code workspace">
+              @if (activeTab() === 'edit') {
+              <shipshape-code-editor
+                [content]="selectedModified()"
+                [language]="selectedFile()?.language ?? 'plaintext'"
+                (contentChange)="updateModified($event)"
+              ></shipshape-code-editor>
+              } @else {
+              <shipshape-code-merge
+                [original]="originalModel().code"
+                [modified]="modifiedModel().code"
+                [language]="originalModel().language"
+                [editable]="false"
+              ></shipshape-code-merge>
+              }
+            </div>
+          </div>
+        </div>
+        }
+      </section>
+    </div>
+  </div>
+</section>

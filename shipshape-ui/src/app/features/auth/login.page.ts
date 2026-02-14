@@ -1,14 +1,14 @@
-import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
-import { NgOptimizedImage } from '@angular/common';
+import { ChangeDetectionStrategy, Component, inject } from "@angular/core";
+import { NgOptimizedImage } from "@angular/common";
 
-import { AuthService, BROWSER_WINDOW } from '../../services/auth.service';
+import { AuthService, BROWSER_WINDOW } from "../../services/auth.service";
 
 @Component({
-  selector: 'shipshape-login-page',
-  templateUrl: './login.page.html',
-  styleUrl: './login.page.css',
+  selector: "shipshape-login-page",
+  templateUrl: "./login.page.html",
+  styleUrl: "./login.page.css",
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [NgOptimizedImage]
+  imports: [NgOptimizedImage],
 })
 export class LoginPage {
   private readonly auth = inject(AuthService);

@@ -1,51 +1,59 @@
-import { Routes } from '@angular/router';
+import { Routes } from "@angular/router";
 
-import { authGuard } from './services/auth.guard';
+import { authGuard } from "./services/auth.guard";
 
 export const appRoutes: Routes = [
   {
-    path: '',
-    pathMatch: 'full',
-    redirectTo: 'dashboard'
+    path: "",
+    pathMatch: "full",
+    redirectTo: "dashboard",
   },
   {
-    path: 'login',
+    path: "login",
     loadComponent: () =>
-      import('./features/auth/login.page').then((m) => m.LoginPage)
+      import("./features/auth/login.page").then((m) => m.LoginPage),
   },
   {
-    path: 'auth/callback',
+    path: "auth/callback",
     loadComponent: () =>
-      import('./features/auth/auth-callback.page').then(
-        (m) => m.AuthCallbackPage
-      )
+      import("./features/auth/auth-callback.page").then(
+        (m) => m.AuthCallbackPage,
+      ),
   },
   {
-    path: 'dashboard',
+    path: "dashboard",
     canMatch: [authGuard],
     loadComponent: () =>
-      import('./features/dashboard/dashboard.page').then((m) => m.DashboardPage)
+      import("./features/dashboard/dashboard.page").then(
+        (m) => m.DashboardPage,
+      ),
   },
   {
-    path: 'batch',
+    path: "batch",
     canMatch: [authGuard],
     loadComponent: () =>
-      import('./features/batch/batch.page').then((m) => m.BatchPage)
+      import("./features/batch/batch.page").then((m) => m.BatchPage),
   },
   {
-    path: 'diff',
+    path: "workflow",
     canMatch: [authGuard],
     loadComponent: () =>
-      import('./features/diff/diff.page').then((m) => m.DiffPage)
+      import("./features/workflow/workflow.page").then((m) => m.WorkflowPage),
   },
   {
-    path: 'control',
+    path: "diff",
     canMatch: [authGuard],
     loadComponent: () =>
-      import('./features/control/control.page').then((m) => m.ControlRoomPage)
+      import("./features/diff/diff.page").then((m) => m.DiffPage),
   },
   {
-    path: '**',
-    redirectTo: 'dashboard'
-  }
+    path: "control",
+    canMatch: [authGuard],
+    loadComponent: () =>
+      import("./features/control/control.page").then((m) => m.ControlRoomPage),
+  },
+  {
+    path: "**",
+    redirectTo: "dashboard",
+  },
 ];

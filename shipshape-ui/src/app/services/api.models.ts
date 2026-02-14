@@ -3,7 +3,7 @@ export interface FleetMetric {
   value: string;
   trend?: string | null;
   detail?: string | null;
-  tone: 'good' | 'warn' | 'bad' | 'info';
+  tone: "good" | "warn" | "bad" | "info";
 }
 
 export interface VesselStatus {
@@ -12,7 +12,7 @@ export interface VesselStatus {
   healthScore: number;
   coverageRisk: string;
   lastRun: string;
-  tone: 'good' | 'warn' | 'bad' | 'info';
+  tone: "good" | "warn" | "bad" | "info";
   statusLabel: string;
 }
 
@@ -20,7 +20,7 @@ export interface FleetAlert {
   id: string;
   title: string;
   description: string;
-  tone: 'good' | 'warn' | 'bad' | 'info';
+  tone: "good" | "warn" | "bad" | "info";
 }
 
 export interface DashboardResponse {
@@ -34,10 +34,10 @@ export interface BatchRun {
   label: string;
   owner: string;
   targetCount: number;
-  status: 'Queued' | 'Running' | 'Complete' | 'Failed' | string;
+  status: "Queued" | "Running" | "Complete" | "Failed" | string;
   health: string;
   lastRun: string;
-  tone: 'good' | 'warn' | 'bad' | 'info';
+  tone: "good" | "warn" | "bad" | "info";
 }
 
 export interface BatchRunsResponse {
@@ -50,12 +50,21 @@ export interface DiffFile {
   language: string;
   original: string;
   modified: string;
-  tone: 'good' | 'warn' | 'bad' | 'info';
+  tone: "good" | "warn" | "bad" | "info";
   statusLabel: string;
 }
 
 export interface DiffListingResponse {
   files: DiffFile[];
+}
+
+export interface DiffUpdateRequest {
+  path: string;
+  modified: string;
+}
+
+export interface DiffUpdateResponse {
+  file: DiffFile;
 }
 
 export interface MechanicOption {
@@ -69,7 +78,7 @@ export interface ActivityLog {
   title: string;
   detail: string;
   time: string;
-  tone: 'good' | 'warn' | 'bad' | 'info';
+  tone: "good" | "warn" | "bad" | "info";
 }
 
 export interface ControlOptionsResponse {

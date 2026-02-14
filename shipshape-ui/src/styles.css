@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap");
 
 :root {
   color-scheme: light;
@@ -27,10 +27,19 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-family: "Space Grotesk", system-ui, sans-serif;
   color: var(--ink-900);
-  background: radial-gradient(circle at top left, rgba(20, 184, 166, 0.18), transparent 55%),
-    radial-gradient(circle at 30% 20%, rgba(15, 118, 110, 0.12), transparent 50%),
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(20, 184, 166, 0.18),
+      transparent 55%
+    ),
+    radial-gradient(
+      circle at 30% 20%,
+      rgba(15, 118, 110, 0.12),
+      transparent 50%
+    ),
     var(--surface);
 }
 
@@ -150,7 +159,7 @@ textarea {
 }
 
 .tag {
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 0.75rem;
   padding: 0.25rem 0.6rem;
   border-radius: 999px;
@@ -164,7 +173,11 @@ textarea {
   padding: 1rem 1.2rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(244, 246, 251, 0.7));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.9),
+    rgba(244, 246, 251, 0.7)
+  );
 }
 
 .metric-card__header {
@@ -309,7 +322,7 @@ textarea {
 }
 
 .code-inline {
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 0.8rem;
   background: var(--surface-muted);
   padding: 0.15rem 0.4rem;

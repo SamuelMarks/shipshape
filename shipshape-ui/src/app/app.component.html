@@ -6,7 +6,7 @@
       width="44"
       height="44"
       alt="ShipShape logo"
-    >
+    />
     <div class="brand-text">
       <span class="brand-title">ShipShape</span>
       <span class="brand-subtitle">Fleet Command</span>
@@ -27,13 +27,15 @@
     }
   </nav>
   <div class="header-actions">
-    <button class="ghost-button" type="button">New voyage</button>
+    <a class="ghost-button" routerLink="/workflow">New project</a>
     @if (isAuthenticated()) {
       <div class="user-chip" aria-label="Signed in user">
         <span class="user-label">Signed in as</span>
         <span class="user-handle">{{ user()?.login }}</span>
       </div>
-      <button class="ghost-button" type="button" (click)="signOut()">Sign out</button>
+      <button class="ghost-button" type="button" (click)="signOut()">
+        Sign out
+      </button>
     } @else {
       <a class="ghost-button" routerLink="/login">Sign in</a>
     }
@@ -46,5 +48,7 @@
 
 <footer class="app-footer">
   <span class="footer-label">ShipShape Control Deck</span>
-  <span class="footer-meta">Unified audits, refits, and launch verification.</span>
+  <span class="footer-meta"
+    >Unified audits, refits, and launch verification.</span
+  >
 </footer>

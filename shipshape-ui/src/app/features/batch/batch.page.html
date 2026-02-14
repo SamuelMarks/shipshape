@@ -3,7 +3,8 @@
     <span class="page-eyebrow">Batch operations</span>
     <h1 class="page-title">Parallel audits and refits</h1>
     <p class="page-subtitle">
-      Track every batch run, filter by owner or status, and keep large-scale refits coordinated.
+      Track every batch run, filter by owner or status, and keep large-scale
+      refits coordinated.
     </p>
   </div>
 
@@ -15,14 +16,19 @@
     <form class="filter-grid" [formGroup]="filterForm">
       <div class="form-field">
         <label for="batch-query">Search</label>
-        <input id="batch-query" type="search" formControlName="query" placeholder="Search by batch or label">
+        <input
+          id="batch-query"
+          type="search"
+          formControlName="query"
+          placeholder="Search by batch or label"
+        />
         <span class="form-hint">Filter by batch ID or launch label.</span>
       </div>
       <div class="form-field">
         <label for="batch-status">Status</label>
         <select id="batch-status" formControlName="status">
           @for (status of statusOptions; track status) {
-            <option [value]="status">{{ status }}</option>
+          <option [value]="status">{{ status }}</option>
           }
         </select>
       </div>
@@ -30,7 +36,7 @@
         <label for="batch-owner">Owner</label>
         <select id="batch-owner" formControlName="owner">
           @for (owner of ownerOptions; track owner) {
-            <option [value]="owner">{{ owner }}</option>
+          <option [value]="owner">{{ owner }}</option>
           }
         </select>
       </div>
@@ -39,47 +45,54 @@
 
   <section class="card" aria-labelledby="batch-table-title">
     <div class="card-header">
-      <h2 id="batch-table-title" class="card-title">Active and recent batches</h2>
+      <h2 id="batch-table-title" class="card-title">
+        Active and recent batches
+      </h2>
       <span class="tag">Last 24 hours</span>
     </div>
 
     @if (filteredBatches().length === 0) {
-      <p class="empty-state">No batches match the current filters.</p>
+    <p class="empty-state">No batches match the current filters.</p>
     } @else {
-      <div class="table-wrapper">
-        <table class="table">
-          <caption class="visually-hidden">Batch runs and their current health</caption>
-          <thead>
-            <tr>
-              <th scope="col">Batch</th>
-              <th scope="col">Owner</th>
-              <th scope="col">Targets</th>
-              <th scope="col">Status</th>
-              <th scope="col">Health</th>
-              <th scope="col">Last run</th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (batch of filteredBatches(); track batch.id) {
-              <tr>
-                <td>
-                  <div class="batch-meta">
-                    <span class="batch-label">{{ batch.label }}</span>
-                    <span class="batch-id">{{ batch.id }}</span>
-                  </div>
-                </td>
-                <td>{{ batch.owner }}</td>
-                <td>{{ batch.targetCount }}</td>
-                <td>
-                  <shipshape-status-pill [label]="batch.status" [tone]="batch.tone"></shipshape-status-pill>
-                </td>
-                <td>{{ batch.health }}</td>
-                <td>{{ batch.lastRun }}</td>
-              </tr>
-            }
-          </tbody>
-        </table>
-      </div>
+    <div class="table-wrapper">
+      <table class="table">
+        <caption class="visually-hidden">
+          Batch runs and their current health
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Batch</th>
+            <th scope="col">Owner</th>
+            <th scope="col">Targets</th>
+            <th scope="col">Status</th>
+            <th scope="col">Health</th>
+            <th scope="col">Last run</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (batch of filteredBatches(); track batch.id) {
+          <tr>
+            <td>
+              <div class="batch-meta">
+                <span class="batch-label">{{ batch.label }}</span>
+                <span class="batch-id">{{ batch.id }}</span>
+              </div>
+            </td>
+            <td>{{ batch.owner }}</td>
+            <td>{{ batch.targetCount }}</td>
+            <td>
+              <shipshape-status-pill
+                [label]="batch.status"
+                [tone]="batch.tone"
+              ></shipshape-status-pill>
+            </td>
+            <td>{{ batch.health }}</td>
+            <td>{{ batch.lastRun }}</td>
+          </tr>
+          }
+        </tbody>
+      </table>
+    </div>
     }
   </section>
 </section>

@@ -40,7 +40,7 @@
 }
 
 .file-path {
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 0.75rem;
 }
 
@@ -63,7 +63,7 @@
   border: 1px solid var(--border);
 }
 
-.editor-shell ngx-monaco-diff-editor {
+.editor-shell shipshape-code-merge {
   display: block;
   height: 100%;
 }
