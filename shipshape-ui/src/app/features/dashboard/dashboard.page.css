@@ -1,0 +1,111 @@
+.hero-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.5rem;
+}
+
+.hero-card {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.hero-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.hero-value {
+  font-size: 2.2rem;
+  font-weight: 700;
+}
+
+.hero-label {
+  color: var(--ink-500);
+}
+
+.hero-meta {
+  margin: 0;
+  color: var(--ink-500);
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+
+.vessel-list,
+.alerts-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.vessel-row,
+.alert-row {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.vessel-row {
+  grid-template-columns: 1.3fr 1.2fr auto;
+  align-items: center;
+}
+
+.vessel-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.vessel-name {
+  font-weight: 600;
+}
+
+.vessel-id {
+  font-size: 0.75rem;
+  color: var(--ink-500);
+}
+
+.vessel-metrics {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--ink-500);
+}
+
+.alert-row {
+  grid-template-columns: 1fr;
+}
+
+.alert-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.alert-title {
+  font-weight: 600;
+}
+
+.alert-description {
+  margin: 0;
+  color: var(--ink-500);
+}
+
+@media (max-width: 820px) {
+  .vessel-row {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+}

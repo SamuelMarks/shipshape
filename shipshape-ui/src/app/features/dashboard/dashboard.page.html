@@ -1,0 +1,103 @@
+<section class="page">
+  <div class="page-header">
+    <span class="page-eyebrow">Fleet intelligence</span>
+    <h1 class="page-title">Command the ShipShape fleet</h1>
+    <p class="page-subtitle">
+      Monitor audit coverage, refit momentum, and CI readiness across every vessel in the fleet.
+    </p>
+  </div>
+
+  <div class="hero-grid">
+    <section class="card hero-card" aria-labelledby="fleet-health-title">
+      <div class="card-header">
+        <h2 id="fleet-health-title" class="card-title">Fleet health</h2>
+        <span class="tag">Signal sweep</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-value">{{ healthyCount() }}</span>
+        <span class="hero-label">Vessels at peak health</span>
+      </div>
+      <p class="hero-meta">
+        Sustain momentum with targeted refits and launch verification.
+      </p>
+    </section>
+
+    <section class="card hero-card" aria-labelledby="launch-ready-title">
+      <div class="card-header">
+        <h2 id="launch-ready-title" class="card-title">Launch readiness</h2>
+        <span class="tag">CI horizon</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-value">76%</span>
+        <span class="hero-label">Repos cleared for launch workflows</span>
+      </div>
+      <p class="hero-meta">
+        Mirror to GitLab and validate builds before opening PRs.
+      </p>
+    </section>
+  </div>
+
+  <section class="card" aria-labelledby="metric-title">
+    <div class="card-header">
+      <h2 id="metric-title" class="card-title">Fleet pulse</h2>
+      <span class="tag">Last 12 hours</span>
+    </div>
+    <div class="metric-grid">
+      @for (metric of metrics(); track metric.label) {
+        <shipshape-metric-card
+          [label]="metric.label"
+          [value]="metric.value"
+          [trend]="metric.trend ?? null"
+          [detail]="metric.detail ?? null"
+          [tone]="metric.tone"
+        ></shipshape-metric-card>
+      }
+    </div>
+  </section>
+
+  <div class="dashboard-grid">
+    <section class="card" aria-labelledby="vessel-title">
+      <div class="card-header">
+        <h2 id="vessel-title" class="card-title">Top priority vessels</h2>
+        <span class="tag">Refit focus</span>
+      </div>
+      <div class="vessel-list" role="list">
+        @for (vessel of vessels(); track vessel.id) {
+          <div class="vessel-row" role="listitem">
+            <div class="vessel-meta">
+              <span class="vessel-name">{{ vessel.name }}</span>
+              <span class="vessel-id">{{ vessel.id }}</span>
+            </div>
+            <div class="vessel-metrics">
+              <span class="vessel-score">Health {{ vessel.healthScore }}</span>
+              <span class="vessel-risk">Coverage {{ vessel.coverageRisk }}</span>
+              <span class="vessel-run">{{ vessel.lastRun }}</span>
+            </div>
+            <shipshape-status-pill
+              [label]="vessel.statusLabel"
+              [tone]="vessel.tone"
+            ></shipshape-status-pill>
+          </div>
+        }
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="alerts-title">
+      <div class="card-header">
+        <h2 id="alerts-title" class="card-title">Alerts</h2>
+        <span class="tag">Needs attention</span>
+      </div>
+      <div class="alerts-list" role="list">
+        @for (alert of alerts(); track alert.id) {
+          <div class="alert-row" role="listitem">
+            <div class="alert-header">
+              <shipshape-status-pill [label]="alert.tone" [tone]="alert.tone"></shipshape-status-pill>
+              <span class="alert-title">{{ alert.title }}</span>
+            </div>
+            <p class="alert-description">{{ alert.description }}</p>
+          </div>
+        }
+      </div>
+    </section>
+  </div>
+</section>

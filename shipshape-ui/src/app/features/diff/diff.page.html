@@ -1,0 +1,55 @@
+<section class="page">
+  <div class="page-header">
+    <span class="page-eyebrow">Diff viewer</span>
+    <h1 class="page-title">Review refit changes</h1>
+    <p class="page-subtitle">
+      Inspect applied patches side by side before pushing to GitHub and mirroring to GitLab.
+    </p>
+  </div>
+
+  <div class="diff-grid">
+    <section class="card diff-sidebar" aria-labelledby="diff-files-title">
+      <div class="card-header">
+        <h2 id="diff-files-title" class="card-title">Changed files</h2>
+        <span class="tag">{{ files().length }} selected</span>
+      </div>
+      <div class="file-list" role="list">
+        @for (file of files(); track file.path) {
+          <button
+            type="button"
+            class="file-card"
+            [class.is-active]="selectedFile()?.path === file.path"
+            [attr.aria-pressed]="selectedFile()?.path === file.path"
+            (click)="selectFile(file)"
+          >
+            <div class="file-card__header">
+              <span class="file-path">{{ file.path }}</span>
+              <shipshape-status-pill [label]="file.statusLabel" [tone]="file.tone"></shipshape-status-pill>
+            </div>
+            <span class="file-summary">{{ file.summary }}</span>
+          </button>
+        }
+      </div>
+    </section>
+
+    <section class="card diff-editor" aria-labelledby="diff-viewer-title">
+      <div class="card-header">
+        <h2 id="diff-viewer-title" class="card-title">Selected diff</h2>
+        <span class="tag">
+          @if (selectedFile(); as activeFile) {
+            {{ activeFile.path }}
+          } @else {
+            No file selected
+          }
+        </span>
+      </div>
+      <div class="editor-shell" role="region" aria-label="Diff viewer">
+        <ngx-monaco-diff-editor
+          [options]="diffOptions"
+          [originalModel]="originalModel()"
+          [modifiedModel]="modifiedModel()"
+        ></ngx-monaco-diff-editor>
+      </div>
+    </section>
+  </div>
+</section>

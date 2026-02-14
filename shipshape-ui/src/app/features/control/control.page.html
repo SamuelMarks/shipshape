@@ -1,0 +1,98 @@
+<section class="page">
+  <div class="page-header">
+    <span class="page-eyebrow">Control room</span>
+    <h1 class="page-title">Launch a fleet workflow</h1>
+    <p class="page-subtitle">
+      Configure audits, refits, and launch verification before shipping changes to GitHub and GitLab.
+    </p>
+  </div>
+
+  <div class="control-grid">
+    <section class="card" aria-labelledby="control-title">
+      <div class="card-header">
+        <h2 id="control-title" class="card-title">Workflow configuration</h2>
+        <span class="tag">Live control</span>
+      </div>
+      <form class="form-grid" [formGroup]="controlForm">
+        <div class="form-field">
+          <label for="source-type">Source type</label>
+          <select id="source-type" formControlName="sourceType">
+            <option value="url">Repository URL</option>
+            <option value="path">Local path</option>
+            <option value="dir">Directory batch</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="source-value">Source value</label>
+          <input
+            id="source-value"
+            type="text"
+            formControlName="sourceValue"
+            aria-describedby="source-hint"
+          >
+          <span id="source-hint" class="form-hint">Provide a URL, local path, or directory.</span>
+        </div>
+        <div class="form-field">
+          <label for="mode">Mode</label>
+          <select id="mode" formControlName="mode">
+            <option value="audit">Audit</option>
+            <option value="refit">Refit</option>
+            <option value="launch">Launch</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="dry-run">Dry run</label>
+          <select id="dry-run" formControlName="dryRun">
+            <option [value]="true">Enabled</option>
+            <option [value]="false">Disabled</option>
+          </select>
+          <span class="form-hint">When enabled, ShipShape produces patches without applying them.</span>
+        </div>
+
+        <fieldset class="mechanic-set">
+          <legend>Mechanics</legend>
+          <div class="chip-row">
+            @for (mechanic of mechanics(); track mechanic.id) {
+              <button
+                type="button"
+                class="chip-button"
+                [class.is-active]="selectedMechanics().includes(mechanic.id)"
+                [attr.aria-pressed]="selectedMechanics().includes(mechanic.id)"
+                (click)="toggleMechanic(mechanic)"
+              >
+                {{ mechanic.label }}
+              </button>
+            }
+          </div>
+          <p class="form-hint">
+            Selected mechanics: <span class="code-inline">{{ selectedMechanics().length }}</span>
+          </p>
+        </fieldset>
+
+        <div class="form-actions">
+          <button type="button" class="primary-button" (click)="queueRun()">Queue run</button>
+          <button type="button" class="ghost-button">Preview plan</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="activity-title">
+      <div class="card-header">
+        <h2 id="activity-title" class="card-title">Activity log</h2>
+        <span class="tag">Recent actions</span>
+      </div>
+      <div class="activity-list" aria-live="polite">
+        @for (entry of activityLog(); track entry.id) {
+          <div class="activity-row">
+            <div class="activity-meta">
+              <shipshape-status-pill [label]="entry.tone" [tone]="entry.tone"></shipshape-status-pill>
+              <span class="activity-title">{{ entry.title }}</span>
+            </div>
+            <p class="activity-detail">{{ entry.detail }}</p>
+            <span class="activity-time">{{ entry.time }}</span>
+          </div>
+        }
+      </div>
+    </section>
+  </div>
+</section>

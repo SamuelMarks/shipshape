@@ -1,0 +1,3 @@
+[workspace]
+members = ["shipshape-cli","shipshape-core","shipshape-server"]
+resolver = "2"

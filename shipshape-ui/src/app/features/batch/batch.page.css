@@ -1,0 +1,29 @@
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.batch-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.batch-label {
+  font-weight: 600;
+}
+
+.batch-id {
+  font-size: 0.75rem;
+  color: var(--ink-500);
+}
+
+.empty-state {
+  margin: 0;
+  color: var(--ink-500);
+}

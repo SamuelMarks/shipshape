@@ -1,0 +1,155 @@
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--ink-900);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 1.5rem 4vw 1rem;
+  background: linear-gradient(135deg, rgba(12, 120, 117, 0.12), rgba(255, 255, 255, 0));
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  backdrop-filter: blur(16px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.brand-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.brand-subtitle {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--ink-500);
+}
+
+.app-nav {
+  display: flex;
+  gap: 1rem;
+  flex: 1;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.nav-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.65rem 1rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  transition: 0.2s ease;
+  background: rgba(255, 255, 255, 0.6);
+  min-width: 8.5rem;
+}
+
+.nav-link:hover,
+.nav-link:focus-visible {
+  border-color: var(--sea-500);
+  box-shadow: var(--glow);
+}
+
+.nav-link--active {
+  border-color: var(--sea-600);
+  background: var(--surface-strong);
+  box-shadow: var(--glow);
+}
+
+.nav-label {
+  font-weight: 600;
+}
+
+.nav-hint {
+  font-size: 0.75rem;
+  color: var(--ink-500);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.user-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 0.75rem;
+}
+
+.user-label {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-500);
+}
+
+.user-handle {
+  font-weight: 600;
+}
+
+.app-main {
+  flex: 1;
+  padding: 2.5rem 4vw 3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.app-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1.5rem 4vw 2.5rem;
+  border-top: 1px solid var(--border);
+  color: var(--ink-500);
+}
+
+.footer-label {
+  font-weight: 600;
+}
+
+.footer-meta {
+  font-size: 0.85rem;
+}
+
+@media (max-width: 920px) {
+  .app-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .header-actions {
+    justify-content: flex-start;
+  }
+
+  .app-nav {
+    justify-content: flex-start;
+  }
+}

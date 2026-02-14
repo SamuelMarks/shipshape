@@ -1,0 +1,9 @@
+<section class="auth-page">
+  <div class="auth-card" role="status" aria-live="polite">
+    <h1 class="auth-title">Signing you in</h1>
+    <p class="auth-subtitle">{{ message() }}</p>
+    @if (status() === 'error') {
+      <a class="ghost-button" routerLink="/login">Back to sign in</a>
+    }
+  </div>
+</section>

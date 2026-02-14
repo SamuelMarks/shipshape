@@ -1,0 +1,75 @@
+.diff-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.diff-sidebar {
+  display: grid;
+  gap: 1rem;
+}
+
+.file-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.file-card {
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.8rem 0.9rem;
+  background: var(--surface);
+  display: grid;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.file-card.is-active {
+  border-color: var(--sea-600);
+  box-shadow: var(--glow);
+  background: var(--surface-strong);
+}
+
+.file-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.file-path {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.75rem;
+}
+
+.file-summary {
+  font-size: 0.85rem;
+  color: var(--ink-500);
+}
+
+.diff-editor {
+  display: grid;
+  gap: 1rem;
+  min-height: 480px;
+}
+
+.editor-shell {
+  height: 100%;
+  min-height: 380px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.editor-shell ngx-monaco-diff-editor {
+  display: block;
+  height: 100%;
+}
+
+@media (max-width: 960px) {
+  .diff-grid {
+    grid-template-columns: 1fr;
+  }
+}

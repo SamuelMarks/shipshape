@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Rust coverage
+        run: cargo llvm-cov --workspace --all-features --json --summary-only --branch --output-path target/llvm-cov/coverage.json --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100
+      - name: Rust branch coverage gate
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+
+          path = "target/llvm-cov/coverage.json"
+          with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+
+          data = payload.get("data", [])
+          if not data:
+            sys.exit("Coverage payload missing data section.")
+
+          totals = data[0].get("totals", {})
+          branches = totals.get("branches")
+          if not branches:
+            sys.exit("Branch coverage missing. Ensure cargo llvm-cov is run with --branch.")
+
+          covered = branches.get("covered")
+          total = branches.get("count")
+          if covered is not None and total is not None:
+            if covered != total:
+              sys.exit(f"Branch coverage {covered}/{total} below 100%.")
+          else:
+            percent = branches.get("percent")
+            if percent is None:
+              sys.exit("Branch coverage summary missing percent.")
+          if percent < 100.0:
+            sys.exit(f"Branch coverage {percent:.2f}% below 100%.")
+          PY
+      - name: Rust doc coverage
+        run: RUSTDOCFLAGS="-D missing_docs" cargo doc --workspace --no-deps
+
+  ui-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: shipshape-ui/package-lock.json
+      - name: Install UI dependencies
+        working-directory: shipshape-ui
+        run: npm ci --legacy-peer-deps
+      - name: UI coverage
+        working-directory: shipshape-ui
+        run: npm test
