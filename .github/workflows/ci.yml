@@ -7,6 +7,22 @@ on:
 jobs:
   rust-coverage:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_USER: rest_user
+          POSTGRES_PASSWORD: rest_pass
+          POSTGRES_DB: shipshape_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
@@ -15,6 +31,11 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Rust coverage
         run: cargo llvm-cov --workspace --all-features --json --summary-only --branch --output-path target/llvm-cov/coverage.json --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100
+        env:
+          DATABASE_URL: postgres://rest_user:rest_pass@localhost:5432/shipshape_db
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_DB: shipshape_db
       - name: Rust branch coverage gate
         run: |
           python - <<'PY'

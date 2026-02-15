@@ -83,27 +83,6 @@ Longer-term
 - Fleet-wide trend analytics with time-series exports
 - Automated remediation campaigns with approval workflows
 
-## 🎨 Design Codes
-
-Fonts
-
-- Headlines: Google Sans Medium
-- Subheads: Roboto Mono Normal
-- Body: Google Sans Normal
-
-Colors
-
-- Blue 500: `#4285f4`
-- Green 500: `#34a853`
-- Yellow 600: `#f9ab00`
-- Red 500: `#ea4335`
-- Halftone Blue: `#57caff`
-- Halftone Green: `#5cdb6d`
-- Halftone Yellow: `#ffd427`
-- Halftone Red: `#ff7daf`
-- White: `#ffffff`
-- Navy Blue: `#20344b`
-
 ## 🏗 Architecture
 
 ShipShape follows a **Hexagonal Architecture** (Ports & Adapters) to ensure distinct separation between core logic, file system operations, and network I/O.
@@ -201,6 +180,31 @@ Runs Postgres and the ShipShape server together.
 export SHIPSHAPE_TOKEN_KEYS=$(openssl rand -base64 32)
 docker compose up --build
 ```
+
+
+### Alternative install (native for Windows, Linux, etc.)
+
+Install Rust, `git`, and ensure you have your PostgreSQL services setup.
+
+#### PostgreSQL
+
+One way to install PostgreSQL is with my cross-platform https://github.com/SamuelMarks/libscript:
+
+```sh
+$ [ -d /tmp/libscript ] || git clone --depth=1 --single-branch https://github.com/SamuelMarks/libscript /tmp/libscript
+$ env -i HOME="$HOME" \
+         PATH="$PATH" \
+         POSTGRES_USER='rest_user' \
+         POSTGRES_SERVICE_PASSWORD='addGoodPasswordhere' \
+         POSTGRES_PASSWORD='rest_pass' \
+         POSTGRES_HOST='localhost' \
+         POSTGRES_DB='shipshape_db' \
+         '/tmp/libscript/_lib/_storage/postgres/setup.sh'
+```
+
+(on Windows use `set` and `libscript\_lib\_storage\postgres\setup.cmd`)
+
+Then use `export DATABASE_URL='postgres://rest_user:rest_pass@localhost/shipshape_db'`
 
 See `USAGE.md` for a fuller walkthrough.
 
