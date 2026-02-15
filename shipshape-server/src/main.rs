@@ -32,14 +32,18 @@ use crate::routes::{
 use crate::workflows::WorkflowService;
 
 #[cfg(not(test))]
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
+fn main() -> std::io::Result<()> {
     dotenv().ok();
     let pool = init_pool();
+
+    // Initialize blocking clients synchronously before the async runtime starts.
+    // This prevents the panic caused by creating a reqwest::blocking::Client
+    // inside the Actix runtime.
     let workflow = WorkflowService::from_env();
     let auth = AuthConfig::from_env();
     let token_cipher =
         TokenCipher::from_env().expect("SHIPSHAPE_TOKEN_KEYS must be set for token encryption");
+
     let state = web::Data::new(AppState {
         pool,
         workflow,
@@ -47,6 +51,7 @@ async fn main() -> std::io::Result<()> {
         token_cipher,
         diff_store: seed_diff_store(),
     });
+
     let origins = std::env::var("SHIPSHAPE_UI_ORIGINS")
         .unwrap_or_else(|_| "http://127.0.0.1:4200,http://localhost:4200".to_string());
     let allowed_origins: Vec<String> = origins
@@ -56,37 +61,40 @@ async fn main() -> std::io::Result<()> {
         .map(String::from)
         .collect();
 
-    HttpServer::new(move || {
-        let mut cors = Cors::default()
-            .allowed_methods(vec!["GET", "POST", "OPTIONS"])
-            .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE])
-            .max_age(3600);
-        for origin in &allowed_origins {
-            cors = cors.allowed_origin(origin);
-        }
-        App::new()
-            .wrap(cors)
-            .app_data(state.clone())
-            .service(auth_config)
-            .service(auth_github)
-            .service(auth_github_token)
-            .service(auth_me)
-            .service(dashboard)
-            .service(batch_runs)
-            .service(diffs)
-            .service(diff_update)
-            .service(control_options)
-            .service(control_queue)
-            .service(voyage_board)
-            .service(vessel_diagnostics)
-            .service(vessel_refit)
-            .service(vessel_workflow)
-            .service(voyage_launch)
-            .service(openapi_json)
+    // Manually start the Actix system
+    actix_web::rt::System::new().block_on(async move {
+        HttpServer::new(move || {
+            let mut cors = Cors::default()
+                .allowed_methods(vec!["GET", "POST", "OPTIONS"])
+                .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE])
+                .max_age(3600);
+            for origin in &allowed_origins {
+                cors = cors.allowed_origin(origin);
+            }
+            App::new()
+                .wrap(cors)
+                .app_data(state.clone())
+                .service(auth_config)
+                .service(auth_github)
+                .service(auth_github_token)
+                .service(auth_me)
+                .service(dashboard)
+                .service(batch_runs)
+                .service(diffs)
+                .service(diff_update)
+                .service(control_options)
+                .service(control_queue)
+                .service(voyage_board)
+                .service(vessel_diagnostics)
+                .service(vessel_refit)
+                .service(vessel_workflow)
+                .service(voyage_launch)
+                .service(openapi_json)
+        })
+        .bind(("127.0.0.1", 8080))?
+        .run()
+        .await
     })
-    .bind(("127.0.0.1", 8080))?
-    .run()
-    .await
 }
 
 #[cfg(test)]

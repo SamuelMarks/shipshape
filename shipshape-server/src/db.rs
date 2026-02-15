@@ -32,61 +32,54 @@ pub fn run_migrations(pool: &DbPool) {
 }
 
 #[cfg(test)]
-fn split_database_url(database_url: &str) -> (String, String) {
-    let (url_base, query) = database_url.split_once('?').unwrap_or((database_url, ""));
-    let (base, _db_name) = url_base
-        .rsplit_once('/')
-        .expect("DATABASE_URL must include a database name");
-    let query_suffix = if query.is_empty() {
-        String::new()
-    } else {
-        format!("?{query}")
-    };
-    (base.to_string(), query_suffix)
-}
-
-#[cfg(test)]
-/// A temporary PostgreSQL database for tests.
+/// A temporary PostgreSQL database schema for tests.
 pub(crate) struct TestDatabase {
     database_url: String,
     admin_url: String,
-    db_name: String,
+    schema_name: String,
     pool: Option<DbPool>,
 }
 
 #[cfg(test)]
 impl TestDatabase {
-    /// Create a new isolated test database using `TEST_DATABASE_URL` or `DATABASE_URL`.
+    /// Create a new isolated test schema using `TEST_DATABASE_URL` or `DATABASE_URL`.
     pub(crate) fn new() -> Self {
         use diesel::Connection;
 
         let base_url = std::env::var("TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .expect("set TEST_DATABASE_URL or DATABASE_URL for PostgreSQL tests");
-        let (base, query_suffix) = split_database_url(&base_url);
-        let db_name = format!("shipshape_test_{}", uuid::Uuid::new_v4().simple());
-        let admin_url = format!("{}/postgres{}", base, query_suffix);
-        let database_url = format!("{}/{}{}", base, db_name, query_suffix);
 
-        let mut admin_conn = PgConnection::establish(&admin_url).expect("connect admin database");
-        diesel::sql_query(format!("CREATE DATABASE \"{db_name}\""))
+        let schema_name = format!("shipshape_test_{}", uuid::Uuid::new_v4().simple());
+
+        // Connect to the DB to create the schema
+        let mut admin_conn = PgConnection::establish(&base_url).expect("connect database");
+
+        diesel::sql_query(format!("CREATE SCHEMA \"{schema_name}\""))
             .execute(&mut admin_conn)
-            .expect("create test database");
+            .expect("create test schema");
+
+        // Append options to set search_path so calls to this URL use the schema automatically
+        let separator = if base_url.contains('?') { '&' } else { '?' };
+        let database_url = format!(
+            "{}{}options=-c%20search_path%3D{}",
+            base_url, separator, schema_name
+        );
 
         Self {
             database_url,
-            admin_url,
-            db_name,
+            admin_url: base_url,
+            schema_name,
             pool: None,
         }
     }
 
-    /// Return the test database URL.
+    /// Return the test database URL (configured with the isolated schema).
     pub(crate) fn database_url(&self) -> &str {
         &self.database_url
     }
 
-    /// Get a pooled connection for the test database (runs migrations once).
+    /// Get a pooled connection for the test database (runs migrations).
     pub(crate) fn pool(&mut self) -> DbPool {
         if self.pool.is_none() {
             let manager = ConnectionManager::<PgConnection>::new(self.database_url.clone());
@@ -108,15 +101,11 @@ impl Drop for TestDatabase {
 
         let _ = self.pool.take();
         if let Ok(mut conn) = PgConnection::establish(&self.admin_url) {
-            let escaped = self.db_name.replace('\'', "''");
             let _ = diesel::sql_query(format!(
-                "SELECT pg_terminate_backend(pid) \
-                 FROM pg_stat_activity \
-                 WHERE datname = '{escaped}' AND pid <> pg_backend_pid()"
+                "DROP SCHEMA IF EXISTS \"{}\" CASCADE",
+                self.schema_name
             ))
             .execute(&mut conn);
-            let _ = diesel::sql_query(format!("DROP DATABASE IF EXISTS \"{}\"", self.db_name))
-                .execute(&mut conn);
         }
     }
 }
@@ -147,17 +136,21 @@ mod tests {
         let _guard = env_lock();
         let test_db = TestDatabase::new();
         let previous = std::env::var("DATABASE_URL").ok();
+
+        // Point DATABASE_URL to the schema-scoped URL
         unsafe {
             std::env::set_var("DATABASE_URL", test_db.database_url());
         }
+
         let pool: DbPool = init_pool();
 
         let mut conn = pool.get().expect("conn");
+        // Verify tables exist in the current schema (not necessarily public)
         let tables: Vec<TableName> = diesel::sql_query(
-            "SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public' AND tablename = 'workflows'",
+            "SELECT tablename AS name FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'workflows'",
         )
-        .load(&mut conn)
-        .expect("query tables");
+            .load(&mut conn)
+            .expect("query tables");
 
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].name, "workflows");

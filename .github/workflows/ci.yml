@@ -30,15 +30,18 @@ jobs:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Rust coverage
-        run: cargo llvm-cov --workspace --all-features --json --summary-only --branch --output-path target/llvm-cov/coverage.json --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100
+        run: |
+          mkdir -p target/llvm-cov
+          cargo llvm-cov --workspace --all-features --json --summary-only --branch --output-path target/llvm-cov/coverage.json --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100
         env:
           DATABASE_URL: postgres://rest_user:rest_pass@localhost:5432/shipshape_db
           POSTGRES_HOST: localhost
           POSTGRES_PORT: 5432
           POSTGRES_DB: shipshape_db
+          SHIPSHAPE_TOKEN_KEYS: nNaCyzp1PqhVXHaRH2RWbaYyjAZ3Dev5o6+WwRAiKK0=
       - name: Rust branch coverage gate
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           import sys
 
