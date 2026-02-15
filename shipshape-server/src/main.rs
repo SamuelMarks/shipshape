@@ -18,6 +18,9 @@ use actix_web::{App, HttpServer, http::header, web};
 #[cfg(not(test))]
 use dotenvy::dotenv;
 
+#[allow(unused_imports)]
+use std::str::FromStr;
+
 #[cfg(not(test))]
 use crate::crypto::TokenCipher;
 #[cfg(not(test))]
@@ -34,10 +37,11 @@ use crate::workflows::WorkflowService;
 #[cfg(not(test))]
 fn main() -> std::io::Result<()> {
     dotenv().ok();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let pool = init_pool();
 
     // Initialize blocking clients synchronously before the async runtime starts.
-    // This prevents the panic caused by creating a reqwest::blocking::Client
+    // This prevents the panic caused by creating a `reqwest::blocking::Client`
     // inside the Actix runtime.
     let workflow = WorkflowService::from_env();
     let auth = AuthConfig::from_env();
@@ -61,6 +65,12 @@ fn main() -> std::io::Result<()> {
         .map(String::from)
         .collect();
 
+    let listen_addr = std::env::var("SHIPSHAPE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let listen_port =
+        u16::from_str(&std::env::var("SHIPSHAPE_PORT").unwrap_or_else(|_| "8080".to_string()))
+            .expect("SHIPSHAPE_PORT must be a u16 number");
+    let err_msg = format!("Can't bind {}:{}", &listen_addr, listen_port);
+
     // Manually start the Actix system
     actix_web::rt::System::new().block_on(async move {
         HttpServer::new(move || {
@@ -72,6 +82,7 @@ fn main() -> std::io::Result<()> {
                 cors = cors.allowed_origin(origin);
             }
             App::new()
+                .wrap(actix_web::middleware::Logger::default())
                 .wrap(cors)
                 .app_data(state.clone())
                 .service(auth_config)
@@ -91,7 +102,8 @@ fn main() -> std::io::Result<()> {
                 .service(voyage_launch)
                 .service(openapi_json)
         })
-        .bind(("127.0.0.1", 8080))?
+        .bind((listen_addr, listen_port))
+        .expect(&err_msg)
         .run()
         .await
     })

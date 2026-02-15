@@ -30,7 +30,7 @@ describe("authInterceptor", () => {
     const http = TestBed.inject(HttpClient);
     const controller = TestBed.inject(HttpTestingController);
 
-    http.get("/dashboard").subscribe();
+    http.get("/api/dashboard").subscribe();
     const req = controller.expectOne("/dashboard");
 
     expect(req.request.headers.get("Authorization")).toBe(
@@ -55,7 +55,7 @@ describe("authInterceptor", () => {
     const http = TestBed.inject(HttpClient);
     const controller = TestBed.inject(HttpTestingController);
 
-    http.get("/auth/config").subscribe();
+    http.get("/api/auth/config").subscribe();
     const req = controller.expectOne("/auth/config");
 
     expect(req.request.headers.has("Authorization")).toBeFalse();
@@ -78,7 +78,7 @@ describe("authInterceptor", () => {
     const http = TestBed.inject(HttpClient);
     const controller = TestBed.inject(HttpTestingController);
 
-    http.get("/dashboard").subscribe();
+    http.get("/api/dashboard").subscribe();
     const req = controller.expectOne("/dashboard");
 
     expect(req.request.headers.has("Authorization")).toBeFalse();

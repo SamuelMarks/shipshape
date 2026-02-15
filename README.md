@@ -181,7 +181,6 @@ export SHIPSHAPE_TOKEN_KEYS=$(openssl rand -base64 32)
 docker compose up --build
 ```
 
-
 ### Alternative install (native for Windows, Linux, etc.)
 
 Install Rust, `git`, and ensure you have your PostgreSQL services setup.

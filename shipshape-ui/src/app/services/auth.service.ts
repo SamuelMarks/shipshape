@@ -93,7 +93,7 @@ export class AuthService {
   ): Promise<AuthGithubResponse> {
     const payload: AuthGithubRequest = { code, redirectUri };
     const response = await firstValueFrom(
-      this.http.post<AuthGithubResponse>(this.url("/auth/github"), payload),
+      this.http.post<AuthGithubResponse>(this.url("/api/auth/github"), payload),
     );
     this.tokenSignal.set(response.token);
     this.storage.setToken(response.token);
@@ -108,7 +108,7 @@ export class AuthService {
     }
     try {
       const user = await firstValueFrom(
-        this.http.get<AuthUser>(this.url("/auth/me")),
+        this.http.get<AuthUser>(this.url("/api/auth/me")),
       );
       this.userSignal.set(user);
       return true;
@@ -133,7 +133,7 @@ export class AuthService {
 
   private async loadConfig(): Promise<AuthConfigResponse> {
     const response = await firstValueFrom(
-      this.http.get<AuthConfigResponse>(this.url("/auth/config")),
+      this.http.get<AuthConfigResponse>(this.url("/api/auth/config")),
     );
     this.configSignal.set(response);
     return response;

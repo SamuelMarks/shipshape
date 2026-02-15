@@ -23,28 +23,30 @@ export class ApiService {
   private readonly baseUrl = inject(API_BASE_URL);
 
   getDashboard() {
-    return this.http.get<DashboardResponse>(this.url("/dashboard"));
+    return this.http.get<DashboardResponse>(this.url("/api/dashboard"));
   }
 
   getBatchRuns() {
-    return this.http.get<BatchRunsResponse>(this.url("/batch/runs"));
+    return this.http.get<BatchRunsResponse>(this.url("/api/batch/runs"));
   }
 
   getDiffListing() {
-    return this.http.get<DiffListingResponse>(this.url("/diffs"));
+    return this.http.get<DiffListingResponse>(this.url("/api/diffs"));
   }
 
   updateDiff(payload: DiffUpdateRequest) {
-    return this.http.post<DiffUpdateResponse>(this.url("/diffs"), payload);
+    return this.http.post<DiffUpdateResponse>(this.url("/api/diffs"), payload);
   }
 
   getControlOptions() {
-    return this.http.get<ControlOptionsResponse>(this.url("/control/options"));
+    return this.http.get<ControlOptionsResponse>(
+      this.url("/api/control/options"),
+    );
   }
 
   queueControlRun(payload: ControlQueueRequest) {
     return this.http.post<ControlQueueResponse>(
-      this.url("/control/queue"),
+      this.url("/api/control/queue"),
       payload,
     );
   }

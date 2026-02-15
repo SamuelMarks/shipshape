@@ -655,7 +655,7 @@ fn persist_auth_session(
     ),
     tag = "auth"
 )]
-#[get("/auth/config")]
+#[get("/api/auth/config")]
 /// Fetch OAuth configuration for the UI.
 pub async fn auth_config(state: web::Data<AppState>) -> impl Responder {
     let config = &state.auth;
@@ -677,7 +677,7 @@ pub async fn auth_config(state: web::Data<AppState>) -> impl Responder {
     ),
     tag = "auth"
 )]
-#[post("/auth/github")]
+#[post("/api/auth/github")]
 /// Exchange a GitHub OAuth code for a ShipShape session.
 pub async fn auth_github(
     state: web::Data<AppState>,
@@ -713,7 +713,7 @@ pub async fn auth_github(
     ),
     tag = "auth"
 )]
-#[post("/auth/github/token")]
+#[post("/api/auth/github/token")]
 /// Exchange a GitHub access token for a ShipShape session.
 pub async fn auth_github_token(
     state: web::Data<AppState>,
@@ -747,7 +747,7 @@ pub async fn auth_github_token(
     ),
     tag = "auth"
 )]
-#[get("/auth/me")]
+#[get("/api/auth/me")]
 /// Fetch the current authenticated user.
 pub async fn auth_me(state: web::Data<AppState>, req: HttpRequest) -> impl Responder {
     let context = match require_auth(&state, &req).await {
@@ -770,7 +770,7 @@ pub async fn auth_me(state: web::Data<AppState>, req: HttpRequest) -> impl Respo
     ),
     tag = "dashboard"
 )]
-#[get("/dashboard")]
+#[get("/api/dashboard")]
 /// Fetch dashboard data.
 pub async fn dashboard(state: web::Data<AppState>, req: HttpRequest) -> impl Responder {
     if let Err(response) = require_auth(&state, &req).await {
@@ -871,7 +871,7 @@ pub async fn dashboard(state: web::Data<AppState>, req: HttpRequest) -> impl Res
     ),
     tag = "batch"
 )]
-#[get("/batch/runs")]
+#[get("/api/batch/runs")]
 /// Fetch batch runs.
 pub async fn batch_runs(state: web::Data<AppState>, req: HttpRequest) -> impl Responder {
     if let Err(response) = require_auth(&state, &req).await {
@@ -931,7 +931,7 @@ pub async fn batch_runs(state: web::Data<AppState>, req: HttpRequest) -> impl Re
     ),
     tag = "diffs"
 )]
-#[get("/diffs")]
+#[get("/api/diffs")]
 /// Fetch diff listing.
 pub async fn diffs(state: web::Data<AppState>, req: HttpRequest) -> impl Responder {
     if let Err(response) = require_auth(&state, &req).await {
@@ -960,7 +960,7 @@ pub async fn diffs(state: web::Data<AppState>, req: HttpRequest) -> impl Respond
     ),
     tag = "diffs"
 )]
-#[post("/diffs")]
+#[post("/api/diffs")]
 /// Update a diff entry.
 pub async fn diff_update(
     state: web::Data<AppState>,
@@ -1003,7 +1003,7 @@ pub async fn diff_update(
     ),
     tag = "control"
 )]
-#[get("/control/options")]
+#[get("/api/control/options")]
 /// Fetch control room options.
 pub async fn control_options(state: web::Data<AppState>, req: HttpRequest) -> impl Responder {
     if let Err(response) = require_auth(&state, &req).await {
@@ -1070,7 +1070,7 @@ pub async fn control_options(state: web::Data<AppState>, req: HttpRequest) -> im
     ),
     tag = "control"
 )]
-#[post("/control/queue")]
+#[post("/api/control/queue")]
 /// Queue a control room run.
 pub async fn control_queue(
     state: web::Data<AppState>,
@@ -1107,7 +1107,7 @@ pub async fn control_queue(
     ),
     tag = "voyage"
 )]
-#[post("/voyage/board")]
+#[post("/api/voyage/board")]
 /// Queue a voyage for the provided repositories.
 pub async fn voyage_board(
     state: web::Data<AppState>,
@@ -1138,7 +1138,7 @@ pub async fn voyage_board(
     ),
     tag = "vessel"
 )]
-#[get("/vessel/{id}/diagnostics")]
+#[get("/api/vessel/{id}/diagnostics")]
 /// Fetch diagnostics for a vessel.
 pub async fn vessel_diagnostics(
     state: web::Data<AppState>,
@@ -1171,7 +1171,7 @@ pub async fn vessel_diagnostics(
     ),
     tag = "vessel"
 )]
-#[post("/vessel/{id}/refit")]
+#[post("/api/vessel/{id}/refit")]
 /// Trigger a refit operation for a vessel.
 pub async fn vessel_refit(
     state: web::Data<AppState>,
@@ -1208,7 +1208,7 @@ pub async fn vessel_refit(
     ),
     tag = "vessel"
 )]
-#[post("/vessel/{id}/workflow")]
+#[post("/api/vessel/{id}/workflow")]
 /// Run the GitHub PR + GitLab mirror workflow for a vessel.
 pub async fn vessel_workflow(
     state: web::Data<AppState>,
@@ -1245,7 +1245,7 @@ pub async fn vessel_workflow(
     ),
     tag = "voyage"
 )]
-#[post("/voyage/launch")]
+#[post("/api/voyage/launch")]
 /// Launch a voyage pipeline.
 pub async fn voyage_launch(
     state: web::Data<AppState>,
@@ -1270,7 +1270,7 @@ pub async fn voyage_launch(
     ),
     tag = "system"
 )]
-#[get("/openapi.json")]
+#[get("/api/openapi.json")]
 /// Serve the OpenAPI document.
 pub async fn openapi_json() -> impl Responder {
     HttpResponse::Ok().json(ApiDoc::openapi())
@@ -1398,7 +1398,9 @@ mod tests {
                 .service(openapi_json),
         )
         .await;
-        let req = test::TestRequest::get().uri("/auth/config").to_request();
+        let req = test::TestRequest::get()
+            .uri("/api/auth/config")
+            .to_request();
         let resp: AuthConfigResponse = test::call_and_read_body_json(&app, req).await;
 
         assert_eq!(resp.client_id, "client-id");
@@ -1453,7 +1455,7 @@ mod tests {
             redirect_uri: None,
         };
         let req = test::TestRequest::post()
-            .uri("/auth/github")
+            .uri("/api/auth/github")
             .set_json(&payload)
             .to_request();
         let resp: AuthGithubResponse = test::call_and_read_body_json(&app, req).await;
@@ -1512,7 +1514,7 @@ mod tests {
             access_token: "gh-token".to_string(),
         };
         let req = test::TestRequest::post()
-            .uri("/auth/github/token")
+            .uri("/api/auth/github/token")
             .set_json(&payload)
             .to_request();
         let resp: AuthGithubResponse = test::call_and_read_body_json(&app, req).await;
@@ -1566,7 +1568,7 @@ mod tests {
             access_token: "gh-token".to_string(),
         };
         let req = test::TestRequest::post()
-            .uri("/auth/github/token")
+            .uri("/api/auth/github/token")
             .set_json(&payload)
             .to_request();
         let resp = test::call_service(&app, req).await;
@@ -1635,7 +1637,7 @@ mod tests {
             redirect_uri: None,
         };
         let req = test::TestRequest::post()
-            .uri("/auth/github")
+            .uri("/api/auth/github")
             .set_json(&payload)
             .to_request();
         let resp: AuthGithubResponse = test::call_and_read_body_json(&app, req).await;
@@ -1679,7 +1681,7 @@ mod tests {
             redirect_uri: None,
         };
         let req = test::TestRequest::post()
-            .uri("/auth/github")
+            .uri("/api/auth/github")
             .set_json(&payload)
             .to_request();
         let resp = test::call_service(&app, req).await;
@@ -1729,7 +1731,7 @@ mod tests {
             redirect_uri: None,
         };
         let req = test::TestRequest::post()
-            .uri("/auth/github")
+            .uri("/api/auth/github")
             .set_json(&payload)
             .to_request();
         let resp = test::call_service(&app, req).await;
@@ -1761,7 +1763,7 @@ mod tests {
                 .service(openapi_json),
         )
         .await;
-        let req = test::TestRequest::get().uri("/auth/me").to_request();
+        let req = test::TestRequest::get().uri("/api/auth/me").to_request();
         let resp = test::call_service(&app, req).await;
 
         assert_eq!(resp.status(), 401);
@@ -1792,7 +1794,7 @@ mod tests {
         )
         .await;
         let req = test::TestRequest::get()
-            .uri("/auth/me")
+            .uri("/api/auth/me")
             .insert_header(("Authorization", "Token abc"))
             .to_request();
         let resp = test::call_service(&app, req).await;
@@ -1825,7 +1827,7 @@ mod tests {
         )
         .await;
         let req = test::TestRequest::get()
-            .uri("/auth/me")
+            .uri("/api/auth/me")
             .insert_header(("Authorization", "Bearer missing"))
             .to_request();
         let resp = test::call_service(&app, req).await;
@@ -1860,7 +1862,7 @@ mod tests {
         )
         .await;
         let req = test::TestRequest::get()
-            .uri("/auth/me")
+            .uri("/api/auth/me")
             .insert_header(auth_header(&session))
             .to_request();
         let resp: AuthUser = test::call_and_read_body_json(&app, req).await;
@@ -1895,7 +1897,7 @@ mod tests {
         )
         .await;
         let req = test::TestRequest::get()
-            .uri("/dashboard")
+            .uri("/api/dashboard")
             .insert_header(auth_header(&session))
             .to_request();
         let resp: DashboardResponse = test::call_and_read_body_json(&app, req).await;
@@ -1931,7 +1933,7 @@ mod tests {
         )
         .await;
         let req = test::TestRequest::get()
-            .uri("/batch/runs")
+            .uri("/api/batch/runs")
             .insert_header(auth_header(&session))
             .to_request();
         let resp: BatchRunsResponse = test::call_and_read_body_json(&app, req).await;
@@ -1966,7 +1968,7 @@ mod tests {
         )
         .await;
         let req = test::TestRequest::get()
-            .uri("/diffs")
+            .uri("/api/diffs")
             .insert_header(auth_header(&session))
             .to_request();
         let resp: DiffListingResponse = test::call_and_read_body_json(&app, req).await;
@@ -2005,7 +2007,7 @@ mod tests {
             modified: "pub fn health_score(report: &FleetReport) -> u8 {\\n  42\\n}\\n".to_string(),
         };
         let req = test::TestRequest::post()
-            .uri("/diffs")
+            .uri("/api/diffs")
             .insert_header(auth_header(&session))
             .set_json(&payload)
             .to_request();
@@ -2015,7 +2017,7 @@ mod tests {
         assert!(resp.file.modified.contains("42"));
 
         let req = test::TestRequest::get()
-            .uri("/diffs")
+            .uri("/api/diffs")
             .insert_header(auth_header(&session))
             .to_request();
         let listing: DiffListingResponse = test::call_and_read_body_json(&app, req).await;
@@ -2059,7 +2061,7 @@ mod tests {
             modified: "noop".to_string(),
         };
         let req = test::TestRequest::post()
-            .uri("/diffs")
+            .uri("/api/diffs")
             .insert_header(auth_header(&session))
             .set_json(&payload)
             .to_request();
@@ -2101,7 +2103,7 @@ mod tests {
             modified: "noop".to_string(),
         };
         let req = test::TestRequest::post()
-            .uri("/diffs")
+            .uri("/api/diffs")
             .insert_header(auth_header(&session))
             .set_json(&payload)
             .to_request();
@@ -2139,7 +2141,7 @@ mod tests {
         )
         .await;
         let req = test::TestRequest::get()
-            .uri("/control/options")
+            .uri("/api/control/options")
             .insert_header(auth_header(&session))
             .to_request();
         let resp: ControlOptionsResponse = test::call_and_read_body_json(&app, req).await;
@@ -2182,7 +2184,7 @@ mod tests {
             mechanic_ids: vec!["cpp-types".to_string(), "ci-drydock".to_string()],
         };
         let req = test::TestRequest::post()
-            .uri("/control/queue")
+            .uri("/api/control/queue")
             .insert_header(auth_header(&session))
             .set_json(&payload)
             .to_request();
@@ -2221,7 +2223,7 @@ mod tests {
             repos: vec!["https://example.com/repo.git".to_string()],
         };
         let req = test::TestRequest::post()
-            .uri("/voyage/board")
+            .uri("/api/voyage/board")
             .insert_header(auth_header(&session))
             .set_json(&payload)
             .to_request();
@@ -2259,7 +2261,7 @@ mod tests {
         )
         .await;
         let req = test::TestRequest::get()
-            .uri("/vessel/v-123/diagnostics")
+            .uri("/api/vessel/v-123/diagnostics")
             .insert_header(auth_header(&session))
             .to_request();
         let resp: DiagnosticsResponse = test::call_and_read_body_json(&app, req).await;
@@ -2297,7 +2299,7 @@ mod tests {
         .await;
         let payload = RefitRequest { apply: true };
         let req = test::TestRequest::post()
-            .uri("/vessel/v-123/refit")
+            .uri("/api/vessel/v-123/refit")
             .insert_header(auth_header(&session))
             .set_json(&payload)
             .to_request();
@@ -2357,7 +2359,7 @@ mod tests {
             },
         };
         let req = test::TestRequest::post()
-            .uri("/vessel/v-456/workflow")
+            .uri("/api/vessel/v-456/workflow")
             .insert_header(auth_header(&session))
             .set_json(&payload)
             .to_request();
@@ -2397,7 +2399,7 @@ mod tests {
             voyage_id: "voyage-1".to_string(),
         };
         let req = test::TestRequest::post()
-            .uri("/voyage/launch")
+            .uri("/api/voyage/launch")
             .insert_header(auth_header(&session))
             .set_json(&payload)
             .to_request();
@@ -2431,7 +2433,9 @@ mod tests {
                 .service(openapi_json),
         )
         .await;
-        let req = test::TestRequest::get().uri("/openapi.json").to_request();
+        let req = test::TestRequest::get()
+            .uri("/api/openapi.json")
+            .to_request();
         let resp: serde_json::Value = test::call_and_read_body_json(&app, req).await;
 
         assert!(resp.get("openapi").is_some());
