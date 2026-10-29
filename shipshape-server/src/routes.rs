@@ -1663,7 +1663,10 @@ mod tests {
 
     /// Build a [`TestApp`] with the provided [`AuthConfig`].
     fn build_state(auth: AuthConfig) -> ServerResult<TestApp> {
-        let mut test_db = TestDatabase::new()?;
+        let mut test_db = {
+            let _guard = crate::db::db_env_lock()?;
+            TestDatabase::new()?
+        };
         let pool = test_db.pool()?;
         let token_cipher = TokenCipher::from_base64_keys([TEST_TOKEN_KEY])?;
         let state = web::Data::new(AppState {
@@ -1731,10 +1734,62 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn auth_config_from_env_loads_defaults() {
+    async fn auth_config_from_env_loads_defaults() -> ServerResult<()> {
+        let _guard = crate::db::db_env_lock()?;
+        let keys = [
+            "GITHUB_SCOPES",
+            "GITHUB_CLIENT_ID",
+            "GITHUB_CLIENT_SECRET",
+            "GITHUB_OAUTH_URL",
+            "GITHUB_API_URL",
+            "GITHUB_USER_AGENT",
+            "SHIPSHAPE_UI_URL",
+        ];
+        let saved: Vec<(&str, Option<String>)> = keys
+            .into_iter()
+            .map(|key| (key, std::env::var(key).ok()))
+            .collect();
+
+        for key in keys {
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
         let cfg = AuthConfig::from_env();
-        assert!(!cfg.github_scopes.is_empty());
+        assert_eq!(cfg.github_scopes, vec!["read:user", "repo"]);
+        assert_eq!(cfg.github_api_url, "https://api.github.com");
         assert!(cfg.authorize_url().ends_with("/authorize"));
+
+        unsafe {
+            std::env::set_var("GITHUB_SCOPES", "read:user, ,repo");
+            std::env::set_var("GITHUB_CLIENT_ID", "cid");
+            std::env::set_var("GITHUB_CLIENT_SECRET", "csecret");
+            std::env::set_var("GITHUB_OAUTH_URL", "https://gh.example.com/oauth/");
+            std::env::set_var("GITHUB_API_URL", "https://api.gh.example.com/");
+            std::env::set_var("GITHUB_USER_AGENT", "custom-agent");
+            std::env::set_var("SHIPSHAPE_UI_URL", "https://ui.example.com/");
+        }
+        let custom_cfg = AuthConfig::from_env();
+        assert_eq!(custom_cfg.github_scopes, vec!["read:user", "repo"]);
+        assert_eq!(custom_cfg.github_client_id, "cid");
+        assert_eq!(custom_cfg.github_client_secret, "csecret");
+        assert_eq!(
+            custom_cfg.authorize_url(),
+            "https://gh.example.com/oauth/authorize"
+        );
+        assert_eq!(
+            custom_cfg.token_url(),
+            "https://gh.example.com/oauth/access_token"
+        );
+        assert_eq!(
+            custom_cfg.redirect_uri(),
+            "https://ui.example.com/auth/callback"
+        );
+
+        for (key, prev) in saved {
+            crate::db::restore_env_var(key, prev);
+        }
+        Ok(())
     }
 
     #[actix_web::test]

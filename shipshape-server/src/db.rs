@@ -181,6 +181,7 @@ mod tests {
 
         assert_eq!(count, 1);
 
+        restore_env_var("DATABASE_URL", Some(test_db.database_url().to_string()));
         restore_env_var("DATABASE_URL", None);
         restore_env_var("DATABASE_URL", previous);
         restore_env_var("TEST_DATABASE_URL", prev_test);

@@ -120,9 +120,11 @@ mod tests {
         let prev_port = std::env::var("SHIPSHAPE_PORT").ok();
 
         unsafe {
+            std::env::remove_var("SHIPSHAPE_HOST");
             std::env::remove_var("SHIPSHAPE_PORT");
         }
-        let (_, default_port) = resolve_listen_config()?;
+        let (default_host, default_port) = resolve_listen_config()?;
+        assert_eq!(default_host, "0.0.0.0");
         assert_eq!(default_port, 8080);
 
         unsafe {

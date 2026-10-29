@@ -259,15 +259,6 @@ mod tests {
         assert!(TokenCipher::from_base64_keys(["short"]).is_err());
     }
 
-    /// Restore or remove an environment variable in tests.
-    fn restore_var(key: &str, prev: Option<String>) {
-        if let Some(v) = prev {
-            unsafe { std::env::set_var(key, v) };
-        } else {
-            unsafe { std::env::remove_var(key) };
-        }
-    }
-
     #[test]
     fn loads_keys_from_env_and_reports_missing() -> ServerResult<()> {
         let _guard = crate::db::db_env_lock()?;
@@ -292,10 +283,8 @@ mod tests {
         }
         let _cipher_multi = TokenCipher::from_env()?;
 
-        restore_var(TOKEN_KEYS_ENV, prev_keys);
-        restore_var(TOKEN_KEY_ENV, prev_key);
-        restore_var(TOKEN_KEYS_ENV, Some(KEY_ONE.to_string()));
-        restore_var(TOKEN_KEYS_ENV, None);
+        crate::db::restore_env_var(TOKEN_KEYS_ENV, prev_keys);
+        crate::db::restore_env_var(TOKEN_KEY_ENV, prev_key);
         Ok(())
     }
 }

@@ -1800,14 +1800,21 @@ mod tests {
     #[test]
     fn git_command_client_validates_local_paths_and_runs_full_flow() -> ServerResult<()> {
         let _guard = env_lock()?;
+        remove_env("SHIPSHAPE_WORKSPACE_ROOT");
+        remove_env("SHIPSHAPE_GIT_AUTHOR_NAME");
+        remove_env("SHIPSHAPE_GIT_AUTHOR_EMAIL");
         set_env("SHIPSHAPE_KEEP_WORKSPACE", "1");
         let _keep_client = GitCommandClient::from_env();
+        set_env("SHIPSHAPE_GIT_AUTHOR_NAME", "Custom Bot");
+        set_env("SHIPSHAPE_GIT_AUTHOR_EMAIL", "custom@example.com");
         set_env("SHIPSHAPE_KEEP_WORKSPACE", "true");
         let keep_true_client = GitCommandClient::from_env();
         keep_true_client.cleanup(GitWorkspace {
             path: PathBuf::from("/tmp/shipshape-kept"),
             managed: true,
         })?;
+        remove_env("SHIPSHAPE_GIT_AUTHOR_NAME");
+        remove_env("SHIPSHAPE_GIT_AUTHOR_EMAIL");
         set_env("SHIPSHAPE_KEEP_WORKSPACE", "false");
         let _keep_false_client = GitCommandClient::from_env();
         remove_env("SHIPSHAPE_KEEP_WORKSPACE");
@@ -1915,7 +1922,8 @@ mod tests {
     }
 
     #[test]
-    fn git_command_client_rejects_empty_inputs() {
+    fn git_command_client_rejects_empty_inputs() -> ServerResult<()> {
+        let _guard = env_lock()?;
         let client = GitCommandClient::from_env();
         let workspace = GitWorkspace {
             path: PathBuf::from("/tmp"),
@@ -1935,6 +1943,7 @@ mod tests {
             pipeline_ref: None,
         };
         assert!(client.push_mirror(&workspace, &gitlab, "branch").is_err());
+        Ok(())
     }
 
     #[test]
@@ -1951,8 +1960,10 @@ mod tests {
             draft: false,
         };
 
-        // Missing GITHUB_TOKEN
+        // Missing GITHUB_TOKEN (and default GITHUB_API_URL / GITHUB_USER_AGENT)
         remove_env("GITHUB_TOKEN");
+        remove_env("GITHUB_API_URL");
+        remove_env("GITHUB_USER_AGENT");
         let no_tok_gh = GitHubApiClient::from_env();
         assert!(no_tok_gh.open_pr(&repo, &pr, "branch").is_err());
 
@@ -2001,6 +2012,7 @@ mod tests {
             pipeline_ref: None,
         };
         remove_env("GITLAB_TOKEN");
+        remove_env("GITLAB_API_URL");
         let no_tok_gl = GitLabApiClient::from_env();
         assert!(no_tok_gl.ensure_project(&gitlab).is_err());
         assert!(no_tok_gl.trigger_pipeline(&gitlab, "branch").is_err());

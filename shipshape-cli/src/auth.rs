@@ -951,7 +951,9 @@ mod tests {
 
         let _lock = env_lock()?;
         {
-            let _g = EnvGuard::set("SHIPSHAPE_AUTH_PATH", Some("/tmp/shipshape-env.json"));
+            let _unset = EnvGuard::set("SHIPSHAPE_AUTH_PATH", None);
+            let _set = EnvGuard::set("SHIPSHAPE_AUTH_PATH", Some("/tmp/shipshape-env.json"));
+            let _override = EnvGuard::set("SHIPSHAPE_AUTH_PATH", Some("/tmp/shipshape-env.json"));
             assert_eq!(
                 auth_store_path(None)?,
                 PathBuf::from("/tmp/shipshape-env.json")
