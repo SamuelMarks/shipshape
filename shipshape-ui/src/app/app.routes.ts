@@ -1,7 +1,15 @@
+/**
+ * @file Application route table definitions for the ShipShape UI.
+ */
+
 import { Routes } from "@angular/router";
 
 import { authGuard } from "./services/auth.guard";
 
+/**
+ * Top-level Angular route configuration with lazy-loaded feature pages
+ * protected by {@link authGuard}.
+ */
 export const appRoutes: Routes = [
   {
     path: "",

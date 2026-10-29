@@ -1,0 +1,44 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: Check code formatting (cargo fmt auto-fix and recheck)
+        entry: python3 scripts/update-coverage-badges.py fmt
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: cargo-clippy
+        name: Lint (cargo clippy & rustdoc)
+        entry: python3 scripts/update-coverage-badges.py lint
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: build
+        name: Build (Rust workspace & Angular UI)
+        entry: python3 scripts/update-coverage-badges.py build
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: test
+        name: Test (Rust workspace & Angular UI)
+        entry: python3 scripts/update-coverage-badges.py test
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: doc-coverage-shield
+        name: Add/update '% doc coverage' shield in README.md
+        entry: python3 scripts/update-coverage-badges.py shields --doc
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: test-coverage-shield
+        name: Add/update '% test coverage' shield in README.md
+        entry: python3 scripts/update-coverage-badges.py shields --test
+        language: system
+        pass_filenames: false
+        always_run: true

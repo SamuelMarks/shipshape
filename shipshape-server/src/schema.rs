@@ -1,4 +1,9 @@
+#![allow(missing_docs)]
+#![allow(clippy::missing_docs_in_private_items)]
 //! Diesel schema definitions for ShipShape server.
+//!
+//! Macro-generated table and join definitions matching the SQL migrations in
+//! `shipshape-server/migrations/`.
 
 diesel::table! {
     voyages (id) {

@@ -1,20 +1,27 @@
 //! Device flow authentication for the ShipShape CLI.
+//!
+//! Implements OAuth 2.0 Device Authorization Grant polling, token exchange,
+//! and local session persistence for [`LoginArgs`].
 
-use crate::CliResult;
-use clap::Args;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
+use clap::Args;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+
+use crate::{CliError, CliResult};
+
+/// Default base URL for the ShipShape server API.
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8080";
-#[cfg_attr(test, allow(dead_code))]
+/// OAuth 2.0 Device Authorization Grant type URI.
 const DEVICE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
+/// Default backoff penalty in seconds when GitHub returns `"slow_down"`.
 const SLOW_DOWN_PENALTY_SECS: u64 = 5;
 
-/// CLI arguments for the login command.
+/// CLI arguments for the `login` subcommand.
 #[derive(Args, Clone, Debug)]
 pub struct LoginArgs {
     /// Base URL of the ShipShape server.
@@ -26,15 +33,22 @@ pub struct LoginArgs {
 }
 
 /// Execute the device flow and store a ShipShape session token.
-#[cfg(not(test))]
+///
+/// # Arguments
+/// * `args` - Parsed CLI login arguments.
 pub async fn run_login(args: LoginArgs) -> CliResult<()> {
     let client = ReqwestLoginClient::new()?;
     let sleeper = TokioSleeper;
     run_login_with(args, &client, &sleeper).await
 }
 
-/// Execute the device flow with injected dependencies.
-async fn run_login_with<C: LoginClient, S: Sleeper>(
+/// Execute the device flow with injected [`LoginClient`] and [`Sleeper`] dependencies.
+///
+/// # Arguments
+/// * `args` - Parsed CLI login arguments.
+/// * `client` - HTTP client implementation for device flow endpoints.
+/// * `sleeper` - Async sleep implementation for polling intervals.
+pub(crate) async fn run_login_with<C: LoginClient, S: Sleeper>(
     args: LoginArgs,
     client: &C,
     sleeper: &S,
@@ -63,7 +77,7 @@ async fn run_login_with<C: LoginClient, S: Sleeper>(
         .await?;
     let auth_path = auth_store_path(args.auth_path)?;
     let stored = StoredAuthSession::new(&server_url, &session);
-    write_auth_session(&auth_path, &stored).await?;
+    write_auth_session(&auth_path, &stored)?;
 
     println!(
         "Authenticated as {}. Token stored at {}.",
@@ -76,63 +90,83 @@ async fn run_login_with<C: LoginClient, S: Sleeper>(
 /// OAuth configuration payload returned by the server.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct AuthConfigResponse {
-    client_id: String,
-    authorize_url: String,
-    scopes: Vec<String>,
+pub(crate) struct AuthConfigResponse {
+    /// GitHub OAuth application client ID.
+    pub(crate) client_id: String,
+    /// GitHub OAuth authorization endpoint URL.
+    pub(crate) authorize_url: String,
+    /// Requested OAuth scopes.
+    pub(crate) scopes: Vec<String>,
 }
 
 /// ShipShape session response returned after authentication.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct AuthGithubResponse {
-    token: String,
-    user: AuthUser,
+pub(crate) struct AuthGithubResponse {
+    /// Issued ShipShape bearer session token.
+    pub(crate) token: String,
+    /// Authenticated user profile.
+    pub(crate) user: AuthUser,
 }
 
 /// Authenticated GitHub user details.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct AuthUser {
-    id: String,
-    login: String,
-    github_id: String,
+pub(crate) struct AuthUser {
+    /// Internal ShipShape user UUID.
+    pub(crate) id: String,
+    /// GitHub username/login handle.
+    pub(crate) login: String,
+    /// GitHub numeric account identifier string.
+    pub(crate) github_id: String,
 }
 
 /// Request payload for exchanging a GitHub access token.
-#[cfg_attr(test, allow(dead_code))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthGithubTokenRequest {
+    /// GitHub OAuth access token obtained from device flow.
     access_token: String,
 }
 
 /// Device flow initiation response from GitHub.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
-struct DeviceCodeResponse {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    verification_uri_complete: Option<String>,
-    expires_in: u64,
-    interval: u64,
+pub(crate) struct DeviceCodeResponse {
+    /// Verification code for the device.
+    pub(crate) device_code: String,
+    /// User-visible code to enter at `verification_uri`.
+    pub(crate) user_code: String,
+    /// URL where the user enters `user_code`.
+    pub(crate) verification_uri: String,
+    /// Optional complete URL with `user_code` pre-populated.
+    pub(crate) verification_uri_complete: Option<String>,
+    /// Seconds until `device_code` expires.
+    pub(crate) expires_in: u64,
+    /// Minimum polling interval in seconds.
+    pub(crate) interval: u64,
 }
 
 /// Device flow polling response from GitHub.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
-struct DeviceTokenResponse {
-    access_token: Option<String>,
-    error: Option<String>,
-    error_description: Option<String>,
-    interval: Option<u64>,
+pub(crate) struct DeviceTokenResponse {
+    /// Issued OAuth access token when authorization succeeds.
+    pub(crate) access_token: Option<String>,
+    /// OAuth error code (`"authorization_pending"`, `"slow_down"`, etc.).
+    pub(crate) error: Option<String>,
+    /// Human-readable description of the OAuth error.
+    pub(crate) error_description: Option<String>,
+    /// Updated polling interval in seconds when `"slow_down"` is returned.
+    pub(crate) interval: Option<u64>,
 }
 
 /// Computed device flow endpoints derived from the OAuth authorize URL.
 #[derive(Debug)]
 struct DeviceEndpoints {
+    /// GitHub device code request endpoint URL.
     device_code_url: String,
+    /// GitHub OAuth access token polling endpoint URL.
     token_url: String,
 }
 
@@ -140,13 +174,20 @@ struct DeviceEndpoints {
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct StoredAuthSession {
+    /// ShipShape server base URL associated with the session.
     server_url: String,
+    /// ShipShape session bearer token.
     token: String,
+    /// Authenticated user metadata.
     user: AuthUser,
 }
 
 impl StoredAuthSession {
     /// Build a new stored session record.
+    ///
+    /// # Arguments
+    /// * `server_url` - Normalized ShipShape server URL.
+    /// * `session` - Session response returned by the server.
     fn new(server_url: &str, session: &AuthGithubResponse) -> Self {
         Self {
             server_url: server_url.to_string(),
@@ -157,20 +198,28 @@ impl StoredAuthSession {
 }
 
 /// Normalize the server URL for consistent API requests.
+///
+/// # Arguments
+/// * `server_url` - Raw server URL string.
 fn normalize_server_url(server_url: &str) -> CliResult<String> {
     let trimmed = server_url.trim();
     if trimmed.is_empty() {
-        return Err("server url is required".into());
+        return Err(CliError::EmptyServerUrl);
     }
     Ok(trimmed.trim_end_matches('/').to_string())
 }
 
 /// Derive device flow endpoints from the OAuth authorize URL.
+///
+/// # Arguments
+/// * `authorize_url` - OAuth authorize endpoint URL ending in `/authorize`.
 fn derive_device_endpoints(authorize_url: &str) -> CliResult<DeviceEndpoints> {
     let trimmed = authorize_url.trim_end_matches('/');
     let base = trimmed
         .strip_suffix("/authorize")
-        .ok_or_else(|| "authorize_url missing /authorize suffix".to_string())?;
+        .ok_or_else(|| CliError::InvalidAuthorizeUrl {
+            url: authorize_url.to_string(),
+        })?;
     let token_url = format!("{base}/access_token");
     let device_base = base.strip_suffix("/oauth").unwrap_or(base);
     let device_code_url = format!("{device_base}/device/code");
@@ -181,7 +230,10 @@ fn derive_device_endpoints(authorize_url: &str) -> CliResult<DeviceEndpoints> {
 }
 
 /// Fetch OAuth configuration from the ShipShape server.
-#[cfg_attr(test, allow(dead_code))]
+///
+/// # Arguments
+/// * `client` - Reqwest HTTP client.
+/// * `server_url` - Normalized ShipShape server URL.
 async fn fetch_auth_config(client: &Client, server_url: &str) -> CliResult<AuthConfigResponse> {
     let url = format!("{server_url}/auth/config");
     let response = client.get(url).send().await?.error_for_status()?;
@@ -190,7 +242,12 @@ async fn fetch_auth_config(client: &Client, server_url: &str) -> CliResult<AuthC
 }
 
 /// Request the GitHub device code for the CLI login flow.
-#[cfg_attr(test, allow(dead_code))]
+///
+/// # Arguments
+/// * `client` - Reqwest HTTP client.
+/// * `device_code_url` - Device code endpoint URL.
+/// * `client_id` - GitHub OAuth client ID.
+/// * `scopes` - Requested OAuth scopes.
 async fn request_device_code(
     client: &Client,
     device_code_url: &str,
@@ -209,7 +266,12 @@ async fn request_device_code(
 }
 
 /// Poll the GitHub device token endpoint.
-#[cfg_attr(test, allow(dead_code))]
+///
+/// # Arguments
+/// * `client` - Reqwest HTTP client.
+/// * `token_url` - Access token endpoint URL.
+/// * `client_id` - GitHub OAuth client ID.
+/// * `device_code` - Device code being polled.
 async fn poll_device_token(
     client: &Client,
     token_url: &str,
@@ -231,7 +293,11 @@ async fn poll_device_token(
 }
 
 /// Exchange a GitHub access token for a ShipShape session token.
-#[cfg_attr(test, allow(dead_code))]
+///
+/// # Arguments
+/// * `client` - Reqwest HTTP client.
+/// * `server_url` - Normalized ShipShape server URL.
+/// * `github_token` - GitHub OAuth access token.
 async fn exchange_token_for_session(
     client: &Client,
     server_url: &str,
@@ -250,13 +316,16 @@ async fn exchange_token_for_session(
 }
 
 /// Print instructions for completing the device flow.
+///
+/// # Arguments
+/// * `device` - Device code response containing user code and verification URLs.
 fn print_device_instructions(device: &DeviceCodeResponse) {
     println!(
         "Open {} and enter code {} to authorize ShipShape.",
         device.verification_uri, device.user_code
     );
     if let Some(url) = device.verification_uri_complete.as_ref() {
-        println!("Or open {} to authorize automatically.", url);
+        println!("Or open {url} to authorize automatically.");
     }
     println!(
         "Waiting for authorization (expires in {} seconds)...",
@@ -267,15 +336,24 @@ fn print_device_instructions(device: &DeviceCodeResponse) {
 /// Parsed state from a device flow poll response.
 #[derive(Debug, PartialEq, Eq)]
 enum DevicePollOutcome {
+    /// User completed authorization and a token was issued.
     Success(String),
+    /// Authorization is still pending user action.
     Pending,
+    /// Polling too fast; slow down to the optional interval.
     SlowDown(Option<u64>),
-    Expired(String),
-    Denied(String),
+    /// The device code expired before user authorization.
+    Expired,
+    /// The user denied the authorization request.
+    Denied,
+    /// An unexpected OAuth error occurred.
     Error(String),
 }
 
-/// Interpret a device flow token response into an actionable outcome.
+/// Interpret a device flow token response into an actionable [`DevicePollOutcome`].
+///
+/// # Arguments
+/// * `response` - Parsed JSON response from the device token endpoint.
 fn interpret_device_token(response: DeviceTokenResponse) -> DevicePollOutcome {
     if let Some(token) = response.access_token {
         return DevicePollOutcome::Success(token);
@@ -286,8 +364,8 @@ fn interpret_device_token(response: DeviceTokenResponse) -> DevicePollOutcome {
     match error.as_str() {
         "authorization_pending" => DevicePollOutcome::Pending,
         "slow_down" => DevicePollOutcome::SlowDown(response.interval),
-        "expired_token" => DevicePollOutcome::Expired("device code expired".to_string()),
-        "access_denied" => DevicePollOutcome::Denied("access denied".to_string()),
+        "expired_token" => DevicePollOutcome::Expired,
+        "access_denied" => DevicePollOutcome::Denied,
         _ => DevicePollOutcome::Error(
             response
                 .error_description
@@ -297,12 +375,22 @@ fn interpret_device_token(response: DeviceTokenResponse) -> DevicePollOutcome {
 }
 
 /// HTTP client abstraction for the login flow.
-trait LoginClient {
+pub(crate) trait LoginClient {
+    /// Fetch OAuth configuration from `server_url`.
+    ///
+    /// # Arguments
+    /// * `server_url` - Normalized ShipShape server URL.
     fn fetch_auth_config<'a>(
         &'a self,
         server_url: &'a str,
     ) -> Pin<Box<dyn Future<Output = CliResult<AuthConfigResponse>> + Send + 'a>>;
 
+    /// Request a GitHub device code from `device_code_url`.
+    ///
+    /// # Arguments
+    /// * `device_code_url` - Device code endpoint URL.
+    /// * `client_id` - OAuth client ID.
+    /// * `scopes` - Requested OAuth scopes.
     fn request_device_code<'a>(
         &'a self,
         device_code_url: &'a str,
@@ -310,6 +398,12 @@ trait LoginClient {
         scopes: &'a [String],
     ) -> Pin<Box<dyn Future<Output = CliResult<DeviceCodeResponse>> + Send + 'a>>;
 
+    /// Poll `token_url` for a device flow token.
+    ///
+    /// # Arguments
+    /// * `token_url` - Token endpoint URL.
+    /// * `client_id` - OAuth client ID.
+    /// * `device_code` - Device code to poll.
     fn poll_device_token<'a>(
         &'a self,
         token_url: &'a str,
@@ -317,6 +411,11 @@ trait LoginClient {
         device_code: &'a str,
     ) -> Pin<Box<dyn Future<Output = CliResult<DeviceTokenResponse>> + Send + 'a>>;
 
+    /// Exchange `github_token` for a ShipShape session at `server_url`.
+    ///
+    /// # Arguments
+    /// * `server_url` - Normalized ShipShape server URL.
+    /// * `github_token` - GitHub access token.
     fn exchange_token_for_session<'a>(
         &'a self,
         server_url: &'a str,
@@ -325,14 +424,13 @@ trait LoginClient {
 }
 
 /// Reqwest-backed login client.
-#[cfg_attr(test, allow(dead_code))]
 struct ReqwestLoginClient {
+    /// Underlying async Reqwest HTTP client.
     client: Client,
 }
 
 impl ReqwestLoginClient {
     /// Build a new reqwest login client.
-    #[cfg_attr(test, allow(dead_code))]
     fn new() -> CliResult<Self> {
         let client = Client::builder().user_agent("shipshape-cli").build()?;
         Ok(Self { client })
@@ -390,21 +488,33 @@ impl LoginClient for ReqwestLoginClient {
 
 /// Polls the GitHub device flow token endpoint.
 trait DeviceTokenPoller {
+    /// Poll once for `device_code`.
+    ///
+    /// # Arguments
+    /// * `device_code` - Device code to query.
     fn poll<'a>(
         &'a self,
         device_code: &'a str,
     ) -> Pin<Box<dyn Future<Output = CliResult<DeviceTokenResponse>> + Send + 'a>>;
 }
 
-/// Device flow poller that delegates to a login client.
+/// Device flow poller that delegates to a [`LoginClient`].
 struct LoginClientPoller<'a, C: LoginClient> {
+    /// Reference to the login client.
     client: &'a C,
+    /// GitHub access token endpoint URL.
     token_url: String,
+    /// GitHub OAuth client ID.
     client_id: String,
 }
 
 impl<'a, C: LoginClient> LoginClientPoller<'a, C> {
     /// Create a new poller for a login client.
+    ///
+    /// # Arguments
+    /// * `client` - Login client reference.
+    /// * `token_url` - GitHub access token endpoint URL.
+    /// * `client_id` - GitHub OAuth client ID.
     fn new(client: &'a C, token_url: String, client_id: String) -> Self {
         Self {
             client,
@@ -425,12 +535,15 @@ impl<C: LoginClient> DeviceTokenPoller for LoginClientPoller<'_, C> {
 }
 
 /// Async sleep abstraction for polling tests.
-trait Sleeper {
+pub(crate) trait Sleeper {
+    /// Sleep asynchronously for `duration`.
+    ///
+    /// # Arguments
+    /// * `duration` - Wait duration before the next poll.
     fn sleep<'a>(&'a self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 /// Tokio-backed sleeper used in production.
-#[cfg_attr(test, allow(dead_code))]
 struct TokioSleeper;
 
 impl Sleeper for TokioSleeper {
@@ -440,6 +553,11 @@ impl Sleeper for TokioSleeper {
 }
 
 /// Poll GitHub until a device token is available or expired.
+///
+/// # Arguments
+/// * `poller` - Device token poller implementation.
+/// * `sleeper` - Async sleeper implementation.
+/// * `device` - Device code initiation response.
 async fn poll_for_github_token<P: DeviceTokenPoller, S: Sleeper>(
     poller: &P,
     sleeper: &S,
@@ -449,7 +567,7 @@ async fn poll_for_github_token<P: DeviceTokenPoller, S: Sleeper>(
     let deadline = Instant::now() + Duration::from_secs(device.expires_in);
     loop {
         if Instant::now() >= deadline {
-            return Err("device authorization timed out".into());
+            return Err(CliError::DeviceAuthorizationTimedOut);
         }
         let response = poller.poll(&device.device_code).await?;
         match interpret_device_token(response) {
@@ -458,70 +576,88 @@ async fn poll_for_github_token<P: DeviceTokenPoller, S: Sleeper>(
                 sleeper.sleep(interval).await;
             }
             DevicePollOutcome::SlowDown(new_interval) => {
-                interval = new_interval
-                    .map(Duration::from_secs)
-                    .unwrap_or_else(|| interval + Duration::from_secs(SLOW_DOWN_PENALTY_SECS));
+                interval = match new_interval {
+                    Some(secs) => Duration::from_secs(secs),
+                    None => interval + Duration::from_secs(SLOW_DOWN_PENALTY_SECS),
+                };
                 sleeper.sleep(interval).await;
             }
-            DevicePollOutcome::Expired(message)
-            | DevicePollOutcome::Denied(message)
-            | DevicePollOutcome::Error(message) => return Err(message.into()),
+            DevicePollOutcome::Expired => return Err(CliError::DeviceCodeExpired),
+            DevicePollOutcome::Denied => return Err(CliError::DeviceAccessDenied),
+            DevicePollOutcome::Error(message) => {
+                return Err(CliError::DeviceFlow { message });
+            }
         }
     }
 }
 
 /// Resolve the local path where auth sessions are stored.
+///
+/// # Arguments
+/// * `auth_path` - Optional explicit file path override.
 fn auth_store_path(auth_path: Option<PathBuf>) -> CliResult<PathBuf> {
     if let Some(path) = auth_path {
         return Ok(path);
     }
-    if let Ok(path) = std::env::var("SHIPSHAPE_AUTH_PATH") {
-        if !path.trim().is_empty() {
-            return Ok(PathBuf::from(path));
-        }
+    if let Ok(path) = std::env::var("SHIPSHAPE_AUTH_PATH")
+        && !path.trim().is_empty()
+    {
+        return Ok(PathBuf::from(path));
     }
-    if let Ok(base) = std::env::var("XDG_CONFIG_HOME") {
-        if !base.trim().is_empty() {
-            return Ok(PathBuf::from(base).join("shipshape").join("auth.json"));
-        }
+    if let Ok(base) = std::env::var("XDG_CONFIG_HOME")
+        && !base.trim().is_empty()
+    {
+        return Ok(PathBuf::from(base).join("shipshape").join("auth.json"));
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.trim().is_empty() {
-            return Ok(PathBuf::from(home).join(".config/shipshape/auth.json"));
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.trim().is_empty()
+    {
+        return Ok(PathBuf::from(home).join(".config/shipshape/auth.json"));
     }
-    Err("unable to resolve auth storage path".into())
+    Err(CliError::AuthStoragePathUnavailable)
 }
 
 /// Persist the auth session JSON to disk.
-async fn write_auth_session(path: &Path, session: &StoredAuthSession) -> CliResult<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let payload = serde_json::to_vec_pretty(session)?;
-    tokio::fs::write(path, payload).await?;
+///
+/// # Arguments
+/// * `path` - Destination file path.
+/// * `session` - Session record to serialize.
+fn write_auth_session(path: &Path, session: &StoredAuthSession) -> CliResult<()> {
+    let payload = serde_json::to_string_pretty(session)?;
+    shipshape_core::FileSystem::write_file(&shipshape_core::StdFileSystem::new(), path, &payload)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::sync::{Mutex, OnceLock};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
 
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    /// Global mutex for serialized environment-variable tests.
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    /// Acquire the global environment-variable mutex for serialized env tests.
+    fn env_lock() -> CliResult<std::sync::MutexGuard<'static, ()>> {
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("env lock")
+            .map_err(|_| CliError::AuthStoragePathUnavailable)
     }
 
+    /// RAII guard for setting and restoring an environment variable in tests.
     struct EnvGuard {
+        /// Environment variable name.
         key: &'static str,
+        /// Previous value prior to override.
         prev: Option<String>,
     }
 
     impl EnvGuard {
+        /// Set or remove environment variable `key`.
         fn set(key: &'static str, value: Option<&str>) -> Self {
             let prev = std::env::var(key).ok();
             match value {
@@ -542,20 +678,18 @@ mod tests {
         }
     }
 
+    /// Poller returning a fixed sequence of [`DeviceTokenResponse`] items.
     struct SequencePoller {
-        responses: Mutex<VecDeque<DeviceTokenResponse>>,
+        /// Queued responses.
+        responses: RefCell<VecDeque<DeviceTokenResponse>>,
     }
 
     impl SequencePoller {
+        /// Create a new sequence poller.
         fn new(responses: Vec<DeviceTokenResponse>) -> Self {
             Self {
-                responses: Mutex::new(responses.into()),
+                responses: RefCell::new(responses.into()),
             }
-        }
-
-        async fn poll_next(&self) -> CliResult<DeviceTokenResponse> {
-            let mut guard = self.responses.lock().expect("poller lock");
-            Ok(guard.pop_front().expect("no more device token responses"))
         }
     }
 
@@ -564,23 +698,32 @@ mod tests {
             &'a self,
             _device_code: &'a str,
         ) -> Pin<Box<dyn Future<Output = CliResult<DeviceTokenResponse>> + Send + 'a>> {
-            Box::pin(self.poll_next())
+            let res = self
+                .responses
+                .borrow_mut()
+                .pop_front()
+                .ok_or(CliError::DeviceAuthorizationTimedOut);
+            Box::pin(async move { res })
         }
     }
 
+    /// Sleeper that records requested sleep durations in memory.
     struct RecordingSleeper {
-        durations: Mutex<Vec<Duration>>,
+        /// Recorded sleep durations.
+        durations: RefCell<Vec<Duration>>,
     }
 
     impl RecordingSleeper {
+        /// Create an empty recording sleeper.
         fn new() -> Self {
             Self {
-                durations: Mutex::new(Vec::new()),
+                durations: RefCell::new(Vec::new()),
             }
         }
 
+        /// Return a snapshot of recorded durations.
         fn durations(&self) -> Vec<Duration> {
-            self.durations.lock().expect("durations").clone()
+            self.durations.borrow().clone()
         }
     }
 
@@ -589,92 +732,24 @@ mod tests {
             &'a self,
             duration: Duration,
         ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-            Box::pin(async move {
-                self.durations.lock().expect("durations").push(duration);
-            })
-        }
-    }
-
-    struct TestLoginClient {
-        config: AuthConfigResponse,
-        device: DeviceCodeResponse,
-        tokens: Mutex<VecDeque<DeviceTokenResponse>>,
-        session: AuthGithubResponse,
-    }
-
-    impl TestLoginClient {
-        fn new(
-            config: AuthConfigResponse,
-            device: DeviceCodeResponse,
-            tokens: Vec<DeviceTokenResponse>,
-            session: AuthGithubResponse,
-        ) -> Self {
-            Self {
-                config,
-                device,
-                tokens: Mutex::new(tokens.into()),
-                session,
-            }
-        }
-    }
-
-    impl LoginClient for TestLoginClient {
-        fn fetch_auth_config<'a>(
-            &'a self,
-            _server_url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = CliResult<AuthConfigResponse>> + Send + 'a>> {
-            let config = self.config.clone();
-            Box::pin(async move { Ok(config) })
-        }
-
-        fn request_device_code<'a>(
-            &'a self,
-            _device_code_url: &'a str,
-            _client_id: &'a str,
-            _scopes: &'a [String],
-        ) -> Pin<Box<dyn Future<Output = CliResult<DeviceCodeResponse>> + Send + 'a>> {
-            let device = self.device.clone();
-            Box::pin(async move { Ok(device) })
-        }
-
-        fn poll_device_token<'a>(
-            &'a self,
-            _token_url: &'a str,
-            _client_id: &'a str,
-            _device_code: &'a str,
-        ) -> Pin<Box<dyn Future<Output = CliResult<DeviceTokenResponse>> + Send + 'a>> {
-            Box::pin(async move {
-                let mut guard = self.tokens.lock().expect("tokens lock");
-                Ok(guard.pop_front().expect("no more device token responses"))
-            })
-        }
-
-        fn exchange_token_for_session<'a>(
-            &'a self,
-            _server_url: &'a str,
-            _github_token: &'a str,
-        ) -> Pin<Box<dyn Future<Output = CliResult<AuthGithubResponse>> + Send + 'a>> {
-            let session = self.session.clone();
-            Box::pin(async move { Ok(session) })
+            self.durations.borrow_mut().push(duration);
+            Box::pin(async move {})
         }
     }
 
     #[test]
-    fn normalize_server_url_trims_trailing_slash() {
-        let url = normalize_server_url("http://localhost:8080/").expect("url");
+    fn normalize_server_url_trims_trailing_slash_and_rejects_empty() -> CliResult<()> {
+        let url = normalize_server_url("http://localhost:8080/")?;
         assert_eq!(url, "http://localhost:8080");
+
+        let err = normalize_server_url("   ");
+        assert!(matches!(err, Err(CliError::EmptyServerUrl)));
+        Ok(())
     }
 
     #[test]
-    fn normalize_server_url_rejects_empty() {
-        let err = normalize_server_url("   ").unwrap_err();
-        assert!(err.to_string().contains("server url"));
-    }
-
-    #[test]
-    fn derive_device_endpoints_handles_standard_urls() {
-        let endpoints =
-            derive_device_endpoints("https://github.com/login/oauth/authorize").expect("endpoints");
+    fn derive_device_endpoints_handles_standard_and_invalid_urls() -> CliResult<()> {
+        let endpoints = derive_device_endpoints("https://github.com/login/oauth/authorize")?;
         assert_eq!(
             endpoints.device_code_url,
             "https://github.com/login/device/code"
@@ -683,108 +758,113 @@ mod tests {
             endpoints.token_url,
             "https://github.com/login/oauth/access_token"
         );
+
+        let err = derive_device_endpoints("https://github.com/login/oauth");
+        assert!(matches!(err, Err(CliError::InvalidAuthorizeUrl { .. })));
+        Ok(())
     }
 
     #[test]
-    fn derive_device_endpoints_errors_without_authorize_suffix() {
-        let err = derive_device_endpoints("https://github.com/login/oauth")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("authorize"));
-    }
-
-    #[test]
-    fn interpret_device_token_handles_success() {
-        let outcome = interpret_device_token(DeviceTokenResponse {
-            access_token: Some("token".to_string()),
-            error: None,
-            error_description: None,
-            interval: None,
-        });
-        assert_eq!(outcome, DevicePollOutcome::Success("token".to_string()));
-    }
-
-    #[test]
-    fn interpret_device_token_handles_pending() {
-        let outcome = interpret_device_token(DeviceTokenResponse {
-            access_token: None,
-            error: Some("authorization_pending".to_string()),
-            error_description: None,
-            interval: None,
-        });
-        assert_eq!(outcome, DevicePollOutcome::Pending);
-    }
-
-    #[test]
-    fn interpret_device_token_handles_slow_down() {
-        let outcome = interpret_device_token(DeviceTokenResponse {
-            access_token: None,
-            error: Some("slow_down".to_string()),
-            error_description: None,
-            interval: Some(9),
-        });
-        assert_eq!(outcome, DevicePollOutcome::SlowDown(Some(9)));
-    }
-
-    #[test]
-    fn interpret_device_token_handles_expired() {
-        let outcome = interpret_device_token(DeviceTokenResponse {
-            access_token: None,
-            error: Some("expired_token".to_string()),
-            error_description: None,
-            interval: None,
-        });
+    fn interpret_device_token_covers_all_outcomes() {
         assert_eq!(
-            outcome,
-            DevicePollOutcome::Expired("device code expired".to_string())
+            interpret_device_token(DeviceTokenResponse {
+                access_token: Some("token".to_string()),
+                error: None,
+                error_description: None,
+                interval: None,
+            }),
+            DevicePollOutcome::Success("token".to_string())
         );
-    }
 
-    #[test]
-    fn interpret_device_token_handles_denied() {
-        let outcome = interpret_device_token(DeviceTokenResponse {
-            access_token: None,
-            error: Some("access_denied".to_string()),
-            error_description: None,
-            interval: None,
-        });
         assert_eq!(
-            outcome,
-            DevicePollOutcome::Denied("access denied".to_string())
+            interpret_device_token(DeviceTokenResponse {
+                access_token: None,
+                error: Some("authorization_pending".to_string()),
+                error_description: None,
+                interval: None,
+            }),
+            DevicePollOutcome::Pending
         );
-    }
 
-    #[test]
-    fn interpret_device_token_handles_unknown_error() {
-        let outcome = interpret_device_token(DeviceTokenResponse {
-            access_token: None,
-            error: Some("invalid_scope".to_string()),
-            error_description: Some("scope bad".to_string()),
-            interval: None,
-        });
-        assert_eq!(outcome, DevicePollOutcome::Error("scope bad".to_string()));
-    }
-
-    #[test]
-    fn interpret_device_token_requires_token_or_error() {
-        let outcome = interpret_device_token(DeviceTokenResponse {
-            access_token: None,
-            error: None,
-            error_description: None,
-            interval: None,
-        });
         assert_eq!(
-            outcome,
+            interpret_device_token(DeviceTokenResponse {
+                access_token: None,
+                error: Some("slow_down".to_string()),
+                error_description: None,
+                interval: Some(9),
+            }),
+            DevicePollOutcome::SlowDown(Some(9))
+        );
+
+        assert_eq!(
+            interpret_device_token(DeviceTokenResponse {
+                access_token: None,
+                error: Some("expired_token".to_string()),
+                error_description: None,
+                interval: None,
+            }),
+            DevicePollOutcome::Expired
+        );
+
+        assert_eq!(
+            interpret_device_token(DeviceTokenResponse {
+                access_token: None,
+                error: Some("access_denied".to_string()),
+                error_description: None,
+                interval: None,
+            }),
+            DevicePollOutcome::Denied
+        );
+
+        assert_eq!(
+            interpret_device_token(DeviceTokenResponse {
+                access_token: None,
+                error: Some("invalid_scope".to_string()),
+                error_description: Some("scope bad".to_string()),
+                interval: None,
+            }),
+            DevicePollOutcome::Error("scope bad".to_string())
+        );
+
+        assert_eq!(
+            interpret_device_token(DeviceTokenResponse {
+                access_token: None,
+                error: Some("custom_err".to_string()),
+                error_description: None,
+                interval: None,
+            }),
+            DevicePollOutcome::Error("device flow error: custom_err".to_string())
+        );
+
+        assert_eq!(
+            interpret_device_token(DeviceTokenResponse {
+                access_token: None,
+                error: None,
+                error_description: None,
+                interval: None,
+            }),
             DevicePollOutcome::Error("missing device flow token".to_string())
         );
     }
 
     #[tokio::test]
-    async fn poll_for_github_token_returns_success() {
+    async fn poll_for_github_token_handles_pending_slowdown_and_errors() -> CliResult<()> {
         let poller = SequencePoller::new(vec![
             DeviceTokenResponse {
                 access_token: None,
                 error: Some("authorization_pending".to_string()),
+                error_description: None,
+                interval: None,
+            },
+            DeviceTokenResponse {
+                access_token: None,
+                error: Some("slow_down".to_string()),
+                error_description: None,
+                interval: Some(7),
+            },
+            DeviceTokenResponse {
+                access_token: None,
+                error: Some("slow_down".to_string()),
                 error_description: None,
                 interval: None,
             },
@@ -805,266 +885,175 @@ mod tests {
             interval: 2,
         };
 
-        let token = poll_for_github_token(&poller, &sleeper, &device)
-            .await
-            .expect("token");
+        let token = poll_for_github_token(&poller, &sleeper, &device).await?;
         assert_eq!(token, "token-123");
-        assert_eq!(sleeper.durations(), vec![Duration::from_secs(2)]);
-    }
+        assert_eq!(
+            sleeper.durations(),
+            vec![
+                Duration::from_secs(2),
+                Duration::from_secs(7),
+                Duration::from_secs(12),
+            ]
+        );
 
-    #[tokio::test]
-    async fn poll_for_github_token_slow_down_updates_interval() {
-        let poller = SequencePoller::new(vec![
-            DeviceTokenResponse {
-                access_token: None,
-                error: Some("slow_down".to_string()),
-                error_description: None,
-                interval: Some(7),
-            },
-            DeviceTokenResponse {
-                access_token: Some("token-456".to_string()),
-                error: None,
-                error_description: None,
-                interval: None,
-            },
-        ]);
-        let sleeper = RecordingSleeper::new();
-        let device = DeviceCodeResponse {
-            device_code: "dev".to_string(),
-            user_code: "code".to_string(),
-            verification_uri: "https://verify".to_string(),
-            verification_uri_complete: None,
-            expires_in: 30,
-            interval: 1,
-        };
-
-        let token = poll_for_github_token(&poller, &sleeper, &device)
-            .await
-            .expect("token");
-        assert_eq!(token, "token-456");
-        assert_eq!(sleeper.durations(), vec![Duration::from_secs(7)]);
-    }
-
-    #[tokio::test]
-    async fn poll_for_github_token_slow_down_defaults_penalty() {
-        let poller = SequencePoller::new(vec![
-            DeviceTokenResponse {
-                access_token: None,
-                error: Some("slow_down".to_string()),
-                error_description: None,
-                interval: None,
-            },
-            DeviceTokenResponse {
-                access_token: Some("token-789".to_string()),
-                error: None,
-                error_description: None,
-                interval: None,
-            },
-        ]);
-        let sleeper = RecordingSleeper::new();
-        let device = DeviceCodeResponse {
-            device_code: "dev".to_string(),
-            user_code: "code".to_string(),
-            verification_uri: "https://verify".to_string(),
-            verification_uri_complete: None,
-            expires_in: 30,
-            interval: 3,
-        };
-
-        let token = poll_for_github_token(&poller, &sleeper, &device)
-            .await
-            .expect("token");
-        assert_eq!(token, "token-789");
-        assert_eq!(sleeper.durations(), vec![Duration::from_secs(8)]);
-    }
-
-    #[tokio::test]
-    async fn poll_for_github_token_exits_on_expired() {
-        let poller = SequencePoller::new(vec![DeviceTokenResponse {
+        // Expired
+        let expired_poller = SequencePoller::new(vec![DeviceTokenResponse {
             access_token: None,
             error: Some("expired_token".to_string()),
             error_description: None,
             interval: None,
         }]);
-        let sleeper = RecordingSleeper::new();
-        let device = DeviceCodeResponse {
-            device_code: "dev".to_string(),
-            user_code: "code".to_string(),
-            verification_uri: "https://verify".to_string(),
-            verification_uri_complete: None,
-            expires_in: 30,
-            interval: 2,
-        };
+        assert!(matches!(
+            poll_for_github_token(&expired_poller, &sleeper, &device).await,
+            Err(CliError::DeviceCodeExpired)
+        ));
 
-        let err = poll_for_github_token(&poller, &sleeper, &device)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("expired"));
-    }
-
-    #[tokio::test]
-    async fn poll_for_github_token_exits_on_denied() {
-        let poller = SequencePoller::new(vec![DeviceTokenResponse {
+        // Denied
+        let denied_poller = SequencePoller::new(vec![DeviceTokenResponse {
             access_token: None,
             error: Some("access_denied".to_string()),
             error_description: None,
             interval: None,
         }]);
-        let sleeper = RecordingSleeper::new();
-        let device = DeviceCodeResponse {
-            device_code: "dev".to_string(),
-            user_code: "code".to_string(),
-            verification_uri: "https://verify".to_string(),
-            verification_uri_complete: None,
-            expires_in: 30,
-            interval: 2,
-        };
+        assert!(matches!(
+            poll_for_github_token(&denied_poller, &sleeper, &device).await,
+            Err(CliError::DeviceAccessDenied)
+        ));
 
-        let err = poll_for_github_token(&poller, &sleeper, &device)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("denied"));
-    }
-
-    #[tokio::test]
-    async fn poll_for_github_token_respects_timeout() {
-        let poller = SequencePoller::new(vec![DeviceTokenResponse {
+        // Custom error
+        let custom_poller = SequencePoller::new(vec![DeviceTokenResponse {
             access_token: None,
-            error: Some("authorization_pending".to_string()),
-            error_description: None,
+            error: Some("bad_device".to_string()),
+            error_description: Some("bad code".to_string()),
             interval: None,
         }]);
-        let sleeper = RecordingSleeper::new();
-        let device = DeviceCodeResponse {
-            device_code: "dev".to_string(),
-            user_code: "code".to_string(),
-            verification_uri: "https://verify".to_string(),
-            verification_uri_complete: None,
+        assert!(matches!(
+            poll_for_github_token(&custom_poller, &sleeper, &device).await,
+            Err(CliError::DeviceFlow { .. })
+        ));
+
+        // Timeout
+        let timeout_device = DeviceCodeResponse {
             expires_in: 0,
-            interval: 1,
+            ..device
         };
-
-        let err = poll_for_github_token(&poller, &sleeper, &device)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("timed out"));
+        assert!(matches!(
+            poll_for_github_token(&custom_poller, &sleeper, &timeout_device).await,
+            Err(CliError::DeviceAuthorizationTimedOut)
+        ));
+        Ok(())
     }
 
     #[test]
-    fn auth_store_path_prefers_explicit_path() {
-        let path = auth_store_path(Some(PathBuf::from("/tmp/shipshape-auth.json"))).expect("path");
-        assert_eq!(path, PathBuf::from("/tmp/shipshape-auth.json"));
-    }
+    fn auth_store_path_resolves_explicit_and_env_fallbacks() -> CliResult<()> {
+        let explicit = auth_store_path(Some(PathBuf::from("/tmp/shipshape-auth.json")))?;
+        assert_eq!(explicit, PathBuf::from("/tmp/shipshape-auth.json"));
 
-    #[test]
-    fn auth_store_path_uses_env_override() {
-        let _lock = env_lock();
-        let _guard = EnvGuard::set("SHIPSHAPE_AUTH_PATH", Some("/tmp/shipshape-env.json"));
-        let path = auth_store_path(None).expect("path");
-        assert_eq!(path, PathBuf::from("/tmp/shipshape-env.json"));
-    }
-
-    #[test]
-    fn auth_store_path_uses_xdg_config() {
-        let _lock = env_lock();
-        let _guard1 = EnvGuard::set("SHIPSHAPE_AUTH_PATH", None);
-        let _guard2 = EnvGuard::set("XDG_CONFIG_HOME", Some("/tmp/xdg"));
-        let path = auth_store_path(None).expect("path");
-        assert_eq!(path, PathBuf::from("/tmp/xdg/shipshape/auth.json"));
-    }
-
-    #[test]
-    fn auth_store_path_uses_home() {
-        let _lock = env_lock();
-        let _guard1 = EnvGuard::set("SHIPSHAPE_AUTH_PATH", None);
-        let _guard2 = EnvGuard::set("XDG_CONFIG_HOME", None);
-        let _guard3 = EnvGuard::set("HOME", Some("/tmp/home"));
-        let path = auth_store_path(None).expect("path");
-        assert_eq!(path, PathBuf::from("/tmp/home/.config/shipshape/auth.json"));
-    }
-
-    #[test]
-    fn auth_store_path_errors_when_unset() {
-        let _lock = env_lock();
-        let _guard1 = EnvGuard::set("SHIPSHAPE_AUTH_PATH", None);
-        let _guard2 = EnvGuard::set("XDG_CONFIG_HOME", None);
-        let _guard3 = EnvGuard::set("HOME", None);
-        let err = auth_store_path(None).unwrap_err();
-        assert!(err.to_string().contains("auth storage"));
+        let _lock = env_lock()?;
+        {
+            let _g = EnvGuard::set("SHIPSHAPE_AUTH_PATH", Some("/tmp/shipshape-env.json"));
+            assert_eq!(
+                auth_store_path(None)?,
+                PathBuf::from("/tmp/shipshape-env.json")
+            );
+        }
+        {
+            let _g1 = EnvGuard::set("SHIPSHAPE_AUTH_PATH", None);
+            let _g2 = EnvGuard::set("XDG_CONFIG_HOME", Some("/tmp/xdg"));
+            assert_eq!(
+                auth_store_path(None)?,
+                PathBuf::from("/tmp/xdg/shipshape/auth.json")
+            );
+        }
+        {
+            let _g1 = EnvGuard::set("SHIPSHAPE_AUTH_PATH", None);
+            let _g2 = EnvGuard::set("XDG_CONFIG_HOME", None);
+            let _g3 = EnvGuard::set("HOME", Some("/tmp/home"));
+            assert_eq!(
+                auth_store_path(None)?,
+                PathBuf::from("/tmp/home/.config/shipshape/auth.json")
+            );
+        }
+        {
+            let _g1 = EnvGuard::set("SHIPSHAPE_AUTH_PATH", None);
+            let _g2 = EnvGuard::set("XDG_CONFIG_HOME", None);
+            let _g3 = EnvGuard::set("HOME", None);
+            assert!(matches!(
+                auth_store_path(None),
+                Err(CliError::AuthStoragePathUnavailable)
+            ));
+        }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn write_auth_session_persists_json() {
-        let root = std::env::temp_dir().join("shipshape_cli_auth_store");
-        let path = root.join("auth.json");
-        let session = StoredAuthSession {
-            server_url: "http://localhost:8080".to_string(),
-            token: "shipshape-token".to_string(),
-            user: AuthUser {
-                id: "usr-1".to_string(),
-                login: "pilot".to_string(),
-                github_id: "42".to_string(),
-            },
-        };
+    async fn run_login_end_to_end_over_mock_http_and_tokio_sleeper() -> CliResult<()> {
+        TokioSleeper.sleep(Duration::from_millis(1)).await;
 
-        write_auth_session(&path, &session)
-            .await
-            .expect("write auth");
-        let contents = tokio::fs::read_to_string(&path).await.expect("read auth");
-        let parsed: StoredAuthSession = serde_json::from_str(&contents).expect("parse auth");
-        assert_eq!(parsed, session);
-    }
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let base_url = format!("http://{addr}");
+        let authorize_url = format!("{base_url}/login/oauth/authorize");
+        let verify_url = format!("{base_url}/login/device");
+        let verify_complete = format!("{base_url}/login/device?code=ABCD-1234");
 
-    #[tokio::test]
-    async fn run_login_happy_path() {
-        let config = AuthConfigResponse {
-            client_id: "client-123".to_string(),
-            authorize_url: "https://github.com/login/oauth/authorize".to_string(),
-            scopes: vec!["read:user".to_string(), "repo".to_string()],
-        };
-        let device = DeviceCodeResponse {
-            device_code: "device-123".to_string(),
-            user_code: "ABCD-1234".to_string(),
-            verification_uri: "https://github.com/login/device".to_string(),
-            verification_uri_complete: Some(
-                "https://github.com/login/device?code=ABCD-1234".to_string(),
-            ),
-            expires_in: 600,
-            interval: 1,
-        };
-        let session = AuthGithubResponse {
-            token: "shipshape-token".to_string(),
-            user: AuthUser {
-                id: "usr-1".to_string(),
-                login: "pilot".to_string(),
-                github_id: "42".to_string(),
-            },
-        };
-        let client = TestLoginClient::new(
-            config,
-            device,
-            vec![DeviceTokenResponse {
-                access_token: Some("gh-token".to_string()),
-                error: None,
-                error_description: None,
-                interval: None,
-            }],
-            session,
-        );
-        let sleeper = RecordingSleeper::new();
-        let path = std::env::temp_dir().join("shipshape_cli_login_auth.json");
+        let server = tokio::spawn(async move {
+            for step in 0..4 {
+                let (mut stream, _) = listener.accept().await?;
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let body = match step {
+                    0 => format!(
+                        r#"{{"clientId":"cid","authorizeUrl":"{authorize_url}","scopes":["read:user","repo"]}}"#
+                    ),
+                    1 => format!(
+                        r#"{{"device_code":"dev-1","user_code":"ABCD-1234","verification_uri":"{verify_url}","verification_uri_complete":"{verify_complete}","expires_in":600,"interval":1}}"#
+                    ),
+                    2 => r#"{"access_token":"gh-tok-1"}"#.to_string(),
+                    _ => {
+                        r#"{"token":"ss-tok-1","user":{"id":"u1","login":"pilot","githubId":"42"}}"#
+                            .to_string()
+                    }
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+            Ok::<(), std::io::Error>(())
+        });
+
+        let root = std::env::temp_dir().join("shipshape_cli_mock_http_login");
+        let auth_path = root.join("nested").join("auth.json");
         let args = LoginArgs {
-            server_url: "http://localhost:8080".to_string(),
-            auth_path: Some(path.clone()),
+            server_url: base_url,
+            auth_path: Some(auth_path.clone()),
         };
 
-        run_login_with(args, &client, &sleeper)
-            .await
-            .expect("run login");
-        let contents = tokio::fs::read_to_string(&path).await.expect("read auth");
-        let parsed: StoredAuthSession = serde_json::from_str(&contents).expect("parse auth");
-        assert_eq!(parsed.token, "shipshape-token");
+        run_login(args).await?;
+        let _ = server.await;
+
+        let contents = tokio::fs::read_to_string(&auth_path).await?;
+        let parsed: StoredAuthSession = serde_json::from_str(&contents)?;
+        assert_eq!(parsed.token, "ss-tok-1");
         assert_eq!(parsed.user.login, "pilot");
-        assert!(sleeper.durations().is_empty());
+
+        let _ = tokio::fs::remove_dir_all(&root).await;
+        Ok(())
+    }
+
+    #[test]
+    fn print_instructions_handles_missing_complete_uri() {
+        let device = DeviceCodeResponse {
+            device_code: "d".to_string(),
+            user_code: "U-1".to_string(),
+            verification_uri: "https://example.com/device".to_string(),
+            verification_uri_complete: None,
+            expires_in: 60,
+            interval: 5,
+        };
+        print_device_instructions(&device);
     }
 }

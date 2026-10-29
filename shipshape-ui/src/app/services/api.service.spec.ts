@@ -1,5 +1,5 @@
 import { TestBed } from "@angular/core/testing";
-import { provideHttpClient } from "@angular/common/http";
+import { provideHttpClient, withXhr } from "@angular/common/http";
 import {
   HttpTestingController,
   provideHttpClientTesting,
@@ -11,7 +11,7 @@ describe("ApiService", () => {
   it("calls the expected endpoints", () => {
     TestBed.configureTestingModule({
       providers: [
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         { provide: API_BASE_URL, useValue: "http://api" },
       ],
@@ -35,16 +35,18 @@ describe("ApiService", () => {
       })
       .subscribe();
 
-    const dashboard = controller.expectOne("http://api/dashboard");
-    const batchRuns = controller.expectOne("http://api/batch/runs");
+    const dashboard = controller.expectOne("http://api/api/dashboard");
+    const batchRuns = controller.expectOne("http://api/api/batch/runs");
     const diffs = controller.expectOne(
-      (req) => req.url === "http://api/diffs" && req.method === "GET",
+      (req) => req.url === "http://api/api/diffs" && req.method === "GET",
     );
     const diffUpdate = controller.expectOne(
-      (req) => req.url === "http://api/diffs" && req.method === "POST",
+      (req) => req.url === "http://api/api/diffs" && req.method === "POST",
     );
-    const controlOptions = controller.expectOne("http://api/control/options");
-    const controlQueue = controller.expectOne("http://api/control/queue");
+    const controlOptions = controller.expectOne(
+      "http://api/api/control/options",
+    );
+    const controlQueue = controller.expectOne("http://api/api/control/queue");
 
     expect(controlQueue.request.method).toBe("POST");
     expect(diffUpdate.request.method).toBe("POST");
@@ -72,7 +74,7 @@ describe("ApiService", () => {
 
   it("uses the default API base URL", () => {
     TestBed.configureTestingModule({
-      providers: [provideHttpClient(), provideHttpClientTesting()],
+      providers: [provideHttpClient(withXhr()), provideHttpClientTesting()],
     });
 
     const baseUrl = TestBed.inject(API_BASE_URL);

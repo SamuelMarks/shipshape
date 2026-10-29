@@ -1,9 +1,10 @@
 # 🚢 ShipShape
 
+[![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![CI](https://github.com/SamuelMarks/shipshape/actions/workflows/ci.yml/badge.svg)](https://github.com/SamuelMarks/shipshape/actions/workflows/ci.yml)
+
 <!-- coverage-badges:start -->
-
 ![Test Coverage](https://img.shields.io/badge/test%20coverage-100%25-brightgreen) ![Doc Coverage](https://img.shields.io/badge/doc%20coverage-100%25-brightgreen)
-
 <!-- coverage-badges:end -->
 
 ### Code Integrity, Batch Refactoring, and CI Verification at Scale.

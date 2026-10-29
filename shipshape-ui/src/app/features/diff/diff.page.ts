@@ -1,11 +1,8 @@
-import {
-  ChangeDetectionStrategy,
-  Component,
-  computed,
-  effect,
-  inject,
-  signal,
-} from "@angular/core";
+/**
+ * @file Interactive side-by-side Diff Viewer page component.
+ */
+
+import { Component, inject } from "@angular/core";
 import { toSignal } from "@angular/core/rxjs-interop";
 import { map } from "rxjs/operators";
 
@@ -13,97 +10,54 @@ import { StatusPillComponent } from "../../ui/status-pill.component";
 import { CodeMergeComponent } from "../../ui/code-merge.component";
 import { ApiService } from "../../services/api.service";
 import { DiffFile } from "../../services/api.models";
+import { DiffDraftController } from "../../services/diff-draft.controller";
 
-interface EditorModel {
-  code: string;
-  language: string;
-}
-
+/**
+ * Page component for reviewing and editing mechanical refit diffs side-by-side.
+ */
 @Component({
   selector: "shipshape-diff-page",
   templateUrl: "./diff.page.html",
   styleUrl: "./diff.page.css",
-  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [CodeMergeComponent, StatusPillComponent],
 })
 export class DiffPage {
+  /** Backend API service client. */
   private readonly api = inject(ApiService);
-  private readonly diffDrafts = new Map<string, string>();
-  private readonly lastPersisted = new Map<string, string>();
 
+  /** Reactive list of diff files loaded from `/api/diffs`. */
   readonly files = toSignal(
     this.api.getDiffListing().pipe(map((response) => response.files)),
     { initialValue: [] },
   );
 
-  readonly selectedFile = signal<DiffFile | null>(null);
-  readonly selectedModified = signal<string>("");
+  /** Shared diff draft and persistence controller. */
+  private readonly drafts = new DiffDraftController(this.files);
 
-  readonly originalModel = computed<EditorModel>(() => {
-    const selected = this.selectedFile();
-    if (!selected) {
-      return { code: "", language: "plaintext" };
-    }
-    return { code: selected.original, language: selected.language };
-  });
+  /** Currently selected diff file. */
+  readonly selectedFile = this.drafts.selectedFile;
+  /** Currently active modified code for the selected diff file. */
+  readonly selectedModified = this.drafts.selectedModified;
+  /** Read-only original code model for the selected file. */
+  readonly originalModel = this.drafts.originalModel;
+  /** Editable modified code model for the selected file. */
+  readonly modifiedModel = this.drafts.modifiedModel;
 
-  readonly modifiedModel = computed<EditorModel>(() => {
-    const selected = this.selectedFile();
-    if (!selected) {
-      return { code: "", language: "plaintext" };
-    }
-    return { code: this.selectedModified(), language: selected.language };
-  });
-
-  constructor() {
-    effect(() => {
-      const files = this.files();
-      if (!this.selectedFile() && files.length > 0) {
-        this.selectFile(files[0]!);
-      }
-    });
-  }
-
+  /**
+   * Select `file` in the diff viewer after stashing any pending draft.
+   *
+   * @param file - Diff file to select.
+   */
   selectFile(file: DiffFile): void {
-    this.stashCurrentDraft();
-    this.seedPersisted(file);
-    this.selectedFile.set(file);
-    const draft = this.diffDrafts.get(file.path) ?? file.modified;
-    this.selectedModified.set(draft);
+    this.drafts.selectFile(file);
   }
 
+  /**
+   * Update the modified content for the active diff file and persist changes.
+   *
+   * @param modified - Updated source text.
+   */
   updateModified(modified: string): void {
-    this.selectedModified.set(modified);
-    const current = this.selectedFile();
-    if (!current) {
-      return;
-    }
-    this.diffDrafts.set(current.path, modified);
-    this.persistDraft(current.path, modified);
-  }
-
-  private seedPersisted(file: DiffFile): void {
-    if (!this.lastPersisted.has(file.path)) {
-      this.lastPersisted.set(file.path, file.modified);
-    }
-  }
-
-  private stashCurrentDraft(): void {
-    const current = this.selectedFile();
-    if (!current) {
-      return;
-    }
-    const modified = this.selectedModified();
-    this.diffDrafts.set(current.path, modified);
-    this.persistDraft(current.path, modified);
-  }
-
-  private persistDraft(path: string, modified: string): void {
-    if (this.lastPersisted.get(path) === modified) {
-      return;
-    }
-    this.api.updateDiff({ path, modified }).subscribe((response) => {
-      this.lastPersisted.set(path, response.file.modified);
-    });
+    this.drafts.updateModified(modified);
   }
 }

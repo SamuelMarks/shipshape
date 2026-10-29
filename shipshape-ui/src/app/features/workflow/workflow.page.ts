@@ -1,9 +1,12 @@
+/**
+ * @file End-to-end Workflow Studio page component for cloning, running tools,
+ * editing diffs, verifying Docker builds, and publishing PR/mirror branches.
+ */
+
 import {
-  ChangeDetectionStrategy,
   Component,
   DestroyRef,
   computed,
-  effect,
   inject,
   signal,
 } from "@angular/core";
@@ -13,6 +16,7 @@ import { map, startWith } from "rxjs/operators";
 
 import { ApiService } from "../../services/api.service";
 import { DiffFile } from "../../services/api.models";
+import { DiffDraftController } from "../../services/diff-draft.controller";
 import { CodeEditorComponent } from "../../ui/code-editor.component";
 import { CodeMergeComponent } from "../../ui/code-merge.component";
 import {
@@ -20,41 +24,57 @@ import {
   StatusTone,
 } from "../../ui/status-pill.component";
 
+/** Docker verification status states. */
 type DockerStatus = "idle" | "running" | "success" | "failed";
+/** Active workspace editor tab identifier. */
 type TabKey = "edit" | "diff";
 
+/** Selectable workflow tool descriptor. */
 interface ToolOption {
+  /** Unique tool identifier. */
   id: string;
+  /** Display label. */
   label: string;
+  /** Brief explanation of the tool's purpose. */
   description: string;
 }
 
+/** Flattened file-tree entry rendered in the workspace sidebar. */
 interface FileTreeItem {
+  /** Unique path identifier. */
   id: string;
+  /** Segment display label. */
   label: string;
+  /** Full relative path. */
   path: string;
+  /** Nesting depth (`0`-indexed). */
   depth: number;
+  /** Entry kind (`"dir"` or `"file"`). */
   kind: "dir" | "file";
+  /** Associated diff file when `kind === "file"`. */
   file?: DiffFile;
 }
 
+/** Intermediate trie node used when building the hierarchical file tree. */
 interface FileTreeNode {
+  /** Segment name. */
   name: string;
+  /** Accumulated relative path. */
   path: string;
+  /** Child nodes keyed by segment name. */
   children: Map<string, FileTreeNode>;
+  /** Associated diff file if this node represents a file. */
   file?: DiffFile;
 }
 
-interface EditorModel {
-  code: string;
-  language: string;
-}
-
+/**
+ * Workflow Studio page component orchestrating repository intake, tool runs,
+ * interactive diff editing, Docker verification, and GitHub/GitLab publishing.
+ */
 @Component({
   selector: "shipshape-workflow-page",
   templateUrl: "./workflow.page.html",
   styleUrl: "./workflow.page.css",
-  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     ReactiveFormsModule,
     CodeEditorComponent,
@@ -63,12 +83,14 @@ interface EditorModel {
   ],
 })
 export class WorkflowPage {
+  /** Non-nullable reactive form builder. */
   private readonly fb = inject(NonNullableFormBuilder);
+  /** Backend API service client. */
   private readonly api = inject(ApiService);
+  /** Component destroy reference used to clean up subscriptions. */
   private readonly destroyRef = inject(DestroyRef);
-  private readonly diffDrafts = new Map<string, string>();
-  private readonly lastPersisted = new Map<string, string>();
 
+  /** Available workflow tool options. */
   readonly toolOptions: ToolOption[] = [
     {
       id: "audit",
@@ -92,6 +114,7 @@ export class WorkflowPage {
     },
   ];
 
+  /** Reactive form controlling repository, fork, and GitLab mirror settings. */
   readonly workflowForm = this.fb.group({
     repoUrl: "https://github.com/shipshape/fleet-core",
     forkTargetType: "org",
@@ -101,6 +124,7 @@ export class WorkflowPage {
     clonePath: "/workspaces/shipshape/fleet-core",
   });
 
+  /** Signal tracking current raw values of `workflowForm`. */
   private readonly formValues = toSignal(
     this.workflowForm.valueChanges.pipe(
       startWith(this.workflowForm.getRawValue()),
@@ -109,25 +133,46 @@ export class WorkflowPage {
     { initialValue: this.workflowForm.getRawValue() },
   );
 
+  /** Currently selected tool IDs. */
   readonly selectedTools = signal<string[]>(["audit", "refit", "drydock"]);
+  /** Current repository clone status. */
   readonly cloneStatus = signal<"idle" | "running" | "complete">("idle");
+  /** Current tool execution status. */
   readonly toolsStatus = signal<"idle" | "running" | "complete">("idle");
+  /** Current Docker verification status. */
   readonly dockerStatus = signal<DockerStatus>("idle");
+  /** Manual override allowing publishing even when Docker verification fails. */
   readonly allowPublishOverride = signal(false);
+  /** Active editor tab (`"edit"` or `"diff"`). */
   readonly activeTab = signal<TabKey>("edit");
 
+  /** Diff files produced by the most recent tool run. */
   readonly files = signal<DiffFile[]>([]);
-  readonly selectedFile = signal<DiffFile | null>(null);
-  readonly selectedModified = signal<string>("");
+  /** Shared diff draft and persistence controller. */
+  private readonly drafts = new DiffDraftController(this.files);
+  /** Currently selected diff file. */
+  readonly selectedFile = this.drafts.selectedFile;
+  /** Currently active modified code for the selected file. */
+  readonly selectedModified = this.drafts.selectedModified;
+  /** Read-only original code model for the selected file. */
+  readonly originalModel = this.drafts.originalModel;
+  /** Editable modified code model for the selected file. */
+  readonly modifiedModel = this.drafts.modifiedModel;
+
+  /** Console output lines from the Docker verification step. */
   readonly dockerLogs = signal<string[]>([]);
+  /** Human-readable summary of the latest tool run. */
   readonly toolRunSummary = signal<string>("Tools are idle.");
 
+  /** Whether a non-empty repository URL has been entered. */
   readonly projectReady = computed(
     () => this.formValues().repoUrl.trim().length > 0,
   );
+  /** Whether a non-empty GitHub fork target has been entered. */
   readonly forkReady = computed(
     () => this.formValues().forkTarget.trim().length > 0,
   );
+  /** Whether both GitLab namespace and project have been entered. */
   readonly mirrorReady = computed(() => {
     const values = this.formValues();
     return (
@@ -136,18 +181,23 @@ export class WorkflowPage {
     );
   });
 
+  /** Whether all prerequisites for cloning are satisfied. */
   readonly canClone = computed(
     () => this.projectReady() && this.forkReady() && this.mirrorReady(),
   );
+  /** Whether at least one changed file is staged in the workspace. */
   readonly hasChanges = computed(() => this.files().length > 0);
+  /** Whether tools finished with zero changed files. */
   readonly showNothingToDo = computed(
     () => this.toolsStatus() === "complete" && !this.hasChanges(),
   );
 
+  /** Whether the publish actions are unlocked. */
   readonly canPublish = computed(
     () => this.dockerStatus() === "success" || this.allowPublishOverride(),
   );
 
+  /** Button label for the GitHub fork action. */
   readonly forkActionLabel = computed(() => {
     const values = this.formValues();
     const target = values.forkTarget.trim();
@@ -159,6 +209,7 @@ export class WorkflowPage {
     return target ? `Fork to GitHub org: ${target}` : "Fork to GitHub org";
   });
 
+  /** Button label for the GitLab mirror action. */
   readonly mirrorActionLabel = computed(() => {
     const values = this.formValues();
     const namespace = values.gitlabNamespace.trim();
@@ -170,6 +221,7 @@ export class WorkflowPage {
     return `Mirror to private GitLab: ${target}`;
   });
 
+  /** Human-readable status pill label for the clone step. */
   readonly cloneStatusLabel = computed(() => {
     switch (this.cloneStatus()) {
       case "running":
@@ -181,6 +233,7 @@ export class WorkflowPage {
     }
   });
 
+  /** Visual tone for the clone status pill. */
   readonly cloneStatusTone = computed<StatusTone>(() => {
     switch (this.cloneStatus()) {
       case "complete":
@@ -192,6 +245,7 @@ export class WorkflowPage {
     }
   });
 
+  /** Human-readable status pill label for the tools step. */
   readonly toolsStatusLabel = computed(() => {
     switch (this.toolsStatus()) {
       case "running":
@@ -203,6 +257,7 @@ export class WorkflowPage {
     }
   });
 
+  /** Visual tone for the tools status pill. */
   readonly toolsStatusTone = computed<StatusTone>(() => {
     switch (this.toolsStatus()) {
       case "complete":
@@ -214,6 +269,7 @@ export class WorkflowPage {
     }
   });
 
+  /** Human-readable status pill label for the Docker test step. */
   readonly dockerStatusLabel = computed(() => {
     switch (this.dockerStatus()) {
       case "running":
@@ -227,6 +283,7 @@ export class WorkflowPage {
     }
   });
 
+  /** Visual tone for the Docker test status pill. */
   readonly dockerStatusTone = computed<StatusTone>(() => {
     switch (this.dockerStatus()) {
       case "success":
@@ -240,10 +297,12 @@ export class WorkflowPage {
     }
   });
 
+  /** Flattened file tree computed from `files`. */
   readonly fileTree = computed<FileTreeItem[]>(() =>
     this.buildFileTree(this.files()),
   );
 
+  /** Status message describing the clone workspace path and state. */
   readonly cloneSummary = computed(() => {
     const path = this.formValues().clonePath.trim() || "workspace";
     switch (this.cloneStatus()) {
@@ -256,30 +315,11 @@ export class WorkflowPage {
     }
   });
 
-  readonly originalModel = computed<EditorModel>(() => {
-    const selected = this.selectedFile();
-    if (!selected) {
-      return { code: "", language: "plaintext" };
-    }
-    return { code: selected.original, language: selected.language };
-  });
-
-  readonly modifiedModel = computed<EditorModel>(() => {
-    const selected = this.selectedFile();
-    if (!selected) {
-      return { code: "", language: "plaintext" };
-    }
-    return { code: this.selectedModified(), language: selected.language };
-  });
-
-  constructor() {
-    effect(() => {
-      if (!this.selectedFile() && this.files().length > 0) {
-        this.selectFile(this.files()[0]!);
-      }
-    });
-  }
-
+  /**
+   * Toggle selection of `option` in `selectedTools`.
+   *
+   * @param option - Tool option to toggle.
+   */
   toggleTool(option: ToolOption): void {
     this.selectedTools.update((current) => {
       if (current.includes(option.id)) {
@@ -289,21 +329,23 @@ export class WorkflowPage {
     });
   }
 
+  /**
+   * Mark the repository workspace as cloned when all clone prerequisites are met.
+   */
   cloneRepo(): void {
     if (!this.canClone()) {
       return;
     }
-    this.cloneStatus.set("running");
     this.cloneStatus.set("complete");
   }
 
+  /**
+   * Execute the selected workflow tools and load resulting diff files.
+   */
   runTools(): void {
     this.toolsStatus.set("running");
+    this.drafts.reset();
     this.files.set([]);
-    this.selectedFile.set(null);
-    this.selectedModified.set("");
-    this.diffDrafts.clear();
-    this.lastPersisted.clear();
     const toolCount = this.selectedTools().length;
     if (toolCount === 0) {
       this.toolsStatus.set("complete");
@@ -326,24 +368,27 @@ export class WorkflowPage {
       });
   }
 
+  /**
+   * Select `file` in the editor after stashing any pending draft.
+   *
+   * @param file - Diff file to select.
+   */
   selectFile(file: DiffFile): void {
-    this.stashCurrentDraft();
-    this.seedPersisted(file);
-    this.selectedFile.set(file);
-    const draft = this.diffDrafts.get(file.path) ?? file.modified;
-    this.selectedModified.set(draft);
+    this.drafts.selectFile(file);
   }
 
+  /**
+   * Update the modified content for the active diff file and persist changes.
+   *
+   * @param value - Updated source text.
+   */
   updateModified(value: string): void {
-    this.selectedModified.set(value);
-    const current = this.selectedFile();
-    if (!current) {
-      return;
-    }
-    this.diffDrafts.set(current.path, value);
-    this.persistDraft(current.path, value);
+    this.drafts.updateModified(value);
   }
 
+  /**
+   * Run the simulated Docker build and test suite against the staged changes.
+   */
   runDockerTest(): void {
     const values = this.formValues();
     const target = values.gitlabProject.trim() || "shipshape-preview";
@@ -383,6 +428,11 @@ export class WorkflowPage {
     this.dockerStatus.set("success");
   }
 
+  /**
+   * Update the manual publish override signal from a checkbox change `event`.
+   *
+   * @param event - DOM checkbox change event.
+   */
   updateOverride(event: Event): void {
     const target = event.target as HTMLInputElement | null;
     if (!target) {
@@ -391,34 +441,12 @@ export class WorkflowPage {
     this.allowPublishOverride.set(target.checked);
   }
 
-  private stashCurrentDraft(): void {
-    const current = this.selectedFile();
-    if (!current) {
-      return;
-    }
-    const modified = this.selectedModified();
-    this.diffDrafts.set(current.path, modified);
-    this.persistDraft(current.path, modified);
-  }
-
-  private seedPersisted(file: DiffFile): void {
-    if (!this.lastPersisted.has(file.path)) {
-      this.lastPersisted.set(file.path, file.modified);
-    }
-  }
-
-  private persistDraft(path: string, modified: string): void {
-    if (this.lastPersisted.get(path) === modified) {
-      return;
-    }
-    this.api
-      .updateDiff({ path, modified })
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe((response) => {
-        this.lastPersisted.set(path, response.file.modified);
-      });
-  }
-
+  /**
+   * Build a flattened, depth-annotated file tree from `files`.
+   *
+   * @param files - Diff files to organize into a directory/file tree.
+   * @returns Flattened list of directory and file tree items.
+   */
   private buildFileTree(files: DiffFile[]): FileTreeItem[] {
     const root: FileTreeNode = { name: "", path: "", children: new Map() };
 
@@ -428,14 +456,15 @@ export class WorkflowPage {
       let currentPath = "";
       segments.forEach((segment, index) => {
         currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-        if (!current.children.has(segment)) {
-          current.children.set(segment, {
+        let next = current.children.get(segment);
+        if (!next) {
+          next = {
             name: segment,
             path: currentPath,
             children: new Map(),
-          });
+          };
+          current.children.set(segment, next);
         }
-        const next = current.children.get(segment)!;
         if (index === segments.length - 1) {
           next.file = file;
         }
@@ -470,6 +499,13 @@ export class WorkflowPage {
     return output;
   }
 
+  /**
+   * Sort directories before files, then alphabetically by name.
+   *
+   * @param a - First tree node.
+   * @param b - Second tree node.
+   * @returns Negative if `a < b`, positive if `a > b`, or `0`.
+   */
   private compareTreeNodes(a: FileTreeNode, b: FileTreeNode): number {
     const aIsFile = Boolean(a.file) && a.children.size === 0;
     const bIsFile = Boolean(b.file) && b.children.size === 0;

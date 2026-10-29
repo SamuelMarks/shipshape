@@ -104,11 +104,11 @@ describe("CodeEditorComponent", () => {
         state: { doc: { length: number } };
         dispatch: (arg: unknown) => void;
       } | null;
-      contentChange: { subscribe: (fn: (value: string) => void) => void };
+      content: { subscribe: (fn: (value: string) => void) => void };
     };
 
     const spy = jasmine.createSpy("contentChange");
-    component.contentChange.subscribe(spy);
+    component.content.subscribe(spy);
 
     const view = component.view;
     view?.dispatch({

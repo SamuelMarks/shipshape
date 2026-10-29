@@ -1,33 +1,137 @@
 #![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
 //! ShipShape command-line interface.
 //!
-//! Provides batch audit, refit, and launch workflows for repositories.
+//! Provides batch audit, refit, launch, and OAuth device-flow login workflows
+//! for local and remote repositories.
 
 mod auth;
 
-use auth::LoginArgs;
-use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
-use shipshape_core::{
-    CloneStatus, LanguageDistribution, LaunchReport, Mechanic, RefitReport, RepoReport,
-    StdFileSystem, TokeiInspector, build_mechanics, format_language_stats, generate_ci_config,
-    render_audit_markdown, render_json, render_launch_markdown, render_refit_markdown,
-};
-use std::fmt::Write;
+use std::ffi::OsString;
+use std::future::Future;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use auth::LoginArgs;
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use derive_more::{Display, Error, From};
+use shipshape_core::{
+    CloneStatus, LanguageDistribution, LaunchReport, Mechanic, RefitReport, RepoReport,
+    ShipShapeError, StdFileSystem, TokeiInspector, build_mechanics, format_language_stats,
+    generate_ci_config, is_hidden_path, render_audit_markdown, render_json, render_launch_markdown,
+    render_refit_markdown,
+};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-pub(crate) type CliResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+/// Unified error enum for the ShipShape CLI powered by `derive_more`.
+#[derive(Debug, Display, Error, From)]
+pub enum CliError {
+    /// Underlying error from `shipshape-core`.
+    #[display("core error: {_0}")]
+    #[from]
+    Core(ShipShapeError),
 
+    /// Filesystem or subprocess I/O error.
+    #[display("io error: {_0}")]
+    #[from]
+    Io(io::Error),
+
+    /// JSON serialization or deserialization failure.
+    #[display("json error: {_0}")]
+    #[from]
+    Json(serde_json::Error),
+
+    /// HTTP request error during authentication.
+    #[display("http error: {_0}")]
+    #[from]
+    Http(reqwest::Error),
+
+    /// Tokio semaphore acquisition error.
+    #[display("semaphore error: {_0}")]
+    #[from]
+    Semaphore(tokio::sync::AcquireError),
+
+    /// Tokio task join error.
+    #[display("task join error: {_0}")]
+    #[from]
+    Join(tokio::task::JoinError),
+
+    /// CLI argument parsing failure.
+    #[display("cli parse error: {_0}")]
+    #[from]
+    Clap(clap::Error),
+
+    /// Repository URL provided via `--url` was empty.
+    #[display("url cannot be empty")]
+    EmptyUrl,
+
+    /// No repository source flag (`--file`, `--url`, `--dir`, or `--path`) was provided.
+    #[display("no repository source provided")]
+    MissingSource,
+
+    /// `git clone` subprocess exited with a non-zero status.
+    #[display("git clone failed with status {status}")]
+    #[from(ignore)]
+    GitCloneFailed {
+        /// Human-readable exit status.
+        status: String,
+    },
+
+    /// Server URL provided to `login` was empty.
+    #[display("server url is required")]
+    EmptyServerUrl,
+
+    /// OAuth authorize URL did not end with `/authorize`.
+    #[display("authorize_url missing /authorize suffix: {url}")]
+    #[from(ignore)]
+    InvalidAuthorizeUrl {
+        /// Invalid authorize URL string.
+        url: String,
+    },
+
+    /// GitHub device code expired before the user completed authorization.
+    #[display("device code expired")]
+    DeviceCodeExpired,
+
+    /// The user denied the GitHub device authorization request.
+    #[display("access denied")]
+    DeviceAccessDenied,
+
+    /// Device authorization polling exceeded the expiration deadline.
+    #[display("device authorization timed out")]
+    DeviceAuthorizationTimedOut,
+
+    /// General OAuth device flow error.
+    #[display("{message}")]
+    #[from(ignore)]
+    DeviceFlow {
+        /// Diagnostic error message.
+        message: String,
+    },
+
+    /// No local configuration directory could be resolved for storing auth credentials.
+    #[display("unable to resolve auth storage path")]
+    AuthStoragePathUnavailable,
+}
+
+/// Convenience result alias for CLI operations.
+pub type CliResult<T> = Result<T, CliError>;
+
+/// Top-level CLI argument parser.
 #[derive(Parser)]
 #[command(name = "shipshape", version, about = "ShipShape CLI")]
 struct Cli {
+    /// Subcommand to execute.
     #[command(subcommand)]
     command: Commands,
 }
 
+/// Repository source arguments (`--file`, `--url`, `--dir`, or `--path`).
 #[derive(Args, Clone)]
 #[command(group(
     ArgGroup::new("source")
@@ -49,6 +153,7 @@ struct RepoSourceArgs {
     path: Option<PathBuf>,
 }
 
+/// Repository cloning concurrency and output directory arguments.
 #[derive(Args, Clone)]
 struct CloneArgs {
     /// Output directory to clone into.
@@ -59,6 +164,7 @@ struct CloneArgs {
     concurrency: usize,
 }
 
+/// Mechanic selection arguments.
 #[derive(Args, Clone)]
 struct MechanicArgs {
     /// Mechanic IDs to run (repeatable or comma-separated).
@@ -66,6 +172,7 @@ struct MechanicArgs {
     mechanic: Vec<String>,
 }
 
+/// Report formatting and destination arguments.
 #[derive(Args, Clone)]
 struct OutputArgs {
     /// Output format for report data.
@@ -76,45 +183,62 @@ struct OutputArgs {
     report_output: Option<PathBuf>,
 }
 
+/// Supported CLI report output formats.
 #[derive(ValueEnum, Copy, Clone, Debug, Eq, PartialEq)]
 enum OutputFormat {
+    /// Plain-text console summary.
     Text,
+    /// Pretty-printed JSON array.
     Json,
+    /// Markdown document.
     Markdown,
 }
 
+/// CLI subcommands.
 #[derive(Subcommand)]
 enum Commands {
     /// Clone and audit repositories from a URL, file, directory, or local path.
     Batch {
+        /// Repository input source.
         #[command(flatten)]
         source: RepoSourceArgs,
+        /// Clone output and concurrency options.
         #[command(flatten)]
         clone: CloneArgs,
+        /// Mechanic IDs to audit with.
         #[command(flatten)]
         mechanics: MechanicArgs,
+        /// Report output format and path.
         #[command(flatten)]
         report: OutputArgs,
     },
     /// Audit repositories from a URL, file, directory, or local path.
     Audit {
+        /// Repository input source.
         #[command(flatten)]
         source: RepoSourceArgs,
+        /// Clone output and concurrency options.
         #[command(flatten)]
         clone: CloneArgs,
+        /// Mechanic IDs to audit with.
         #[command(flatten)]
         mechanics: MechanicArgs,
+        /// Report output format and path.
         #[command(flatten)]
         report: OutputArgs,
     },
     /// Run refit mechanics in dry-run mode or apply fixes.
     Refit {
+        /// Repository input source.
         #[command(flatten)]
         source: RepoSourceArgs,
+        /// Clone output and concurrency options.
         #[command(flatten)]
         clone: CloneArgs,
+        /// Mechanic IDs to execute.
         #[command(flatten)]
         mechanics: MechanicArgs,
+        /// Report output format and path.
         #[command(flatten)]
         report: OutputArgs,
         /// Apply fixes instead of dry-run output.
@@ -123,10 +247,13 @@ enum Commands {
     },
     /// Generate launch (CI) configs for repositories.
     Launch {
+        /// Repository input source.
         #[command(flatten)]
         source: RepoSourceArgs,
+        /// Clone output and concurrency options.
         #[command(flatten)]
         clone: CloneArgs,
+        /// Report output format and path.
         #[command(flatten)]
         report: OutputArgs,
     },
@@ -137,26 +264,38 @@ enum Commands {
 #[cfg(not(test))]
 #[tokio::main]
 async fn main() -> CliResult<()> {
-    let cli = Cli::parse();
+    run_cli_from_iter(std::env::args_os()).await
+}
 
+#[cfg(test)]
+fn main() {}
+
+/// Parse CLI arguments from `args` and execute the requested subcommand.
+///
+/// # Arguments
+/// * `args` - Iterator of command-line arguments (including program name at index 0).
+pub async fn run_cli_from_iter<I, T>(args: I) -> CliResult<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cli = Cli::try_parse_from(args)?;
+    dispatch_cli(cli).await
+}
+
+/// Dispatch a parsed [`Cli`] command to its workflow handler.
+///
+/// # Arguments
+/// * `cli` - Parsed command-line structure.
+async fn dispatch_cli(cli: Cli) -> CliResult<()> {
     match cli.command {
         Commands::Batch {
             source,
             clone,
             mechanics,
             report,
-        } => {
-            let source = resolve_source_args(&source)?;
-            run_audit(
-                source,
-                clone.output,
-                clone.concurrency,
-                mechanics.mechanic,
-                report,
-            )
-            .await?
         }
-        Commands::Audit {
+        | Commands::Audit {
             source,
             clone,
             mechanics,
@@ -170,7 +309,7 @@ async fn main() -> CliResult<()> {
                 mechanics.mechanic,
                 report,
             )
-            .await?
+            .await
         }
         Commands::Refit {
             source,
@@ -188,7 +327,7 @@ async fn main() -> CliResult<()> {
                 report,
                 apply,
             )
-            .await?
+            .await
         }
         Commands::Launch {
             source,
@@ -196,19 +335,187 @@ async fn main() -> CliResult<()> {
             report,
         } => {
             let source = resolve_source_args(&source)?;
-            run_launch(source, clone.output, clone.concurrency, report).await?
+            run_launch(source, clone.output, clone.concurrency, report).await
         }
-        Commands::Login(args) => {
-            auth::run_login(args).await?;
-        }
+        Commands::Login(args) => auth::run_login(args).await,
     }
-
-    Ok(())
 }
 
-#[cfg(test)]
-fn main() {}
+/// Trait unifying report initialization and clone-status mutation across batch workflows.
+trait BatchReportItem: Send + 'static {
+    /// Construct a new report in [`CloneStatus::Pending`] state.
+    ///
+    /// # Arguments
+    /// * `source` - Source URL or path label.
+    /// * `path` - Local workspace directory path.
+    fn new_report(source: String, path: PathBuf) -> Self;
 
+    /// Update the [`CloneStatus`] on this report.
+    ///
+    /// # Arguments
+    /// * `status` - New clone status value.
+    fn set_clone_status(&mut self, status: CloneStatus);
+}
+
+impl BatchReportItem for RepoReport {
+    fn new_report(source: String, path: PathBuf) -> Self {
+        Self::new(source, path)
+    }
+
+    fn set_clone_status(&mut self, status: CloneStatus) {
+        self.clone_status = status;
+    }
+}
+
+impl BatchReportItem for RefitReport {
+    fn new_report(source: String, path: PathBuf) -> Self {
+        Self::new(source, path)
+    }
+
+    fn set_clone_status(&mut self, status: CloneStatus) {
+        self.clone_status = status;
+    }
+}
+
+impl BatchReportItem for LaunchReport {
+    fn new_report(source: String, path: PathBuf) -> Self {
+        Self::new(source, path)
+    }
+
+    fn set_clone_status(&mut self, status: CloneStatus) {
+        self.clone_status = status;
+    }
+}
+
+/// Load targets and create the clone directory when remote targets are present.
+///
+/// # Arguments
+/// * `verb` - Action name used in the empty-target message (`"audit"`, `"refit"`, `"launch"`).
+/// * `source` - Resolved repository source.
+/// * `clone_output` - Directory where remote repositories are cloned.
+async fn prepare_batch_targets(
+    verb: &str,
+    source: BatchSource,
+    clone_output: &Path,
+) -> CliResult<Option<Vec<RepoTarget>>> {
+    let targets = load_repo_targets(source, clone_output).await?;
+    if targets.is_empty() {
+        println!("No repositories found to {verb}.");
+        return Ok(None);
+    }
+
+    if targets
+        .iter()
+        .any(|target| matches!(target, RepoTarget::Clone { .. }))
+    {
+        tokio::fs::create_dir_all(clone_output).await?;
+    }
+
+    Ok(Some(targets))
+}
+
+/// Generic concurrent batch runner shared by `audit`, `refit`, and `launch`.
+///
+/// # Arguments
+/// * `verb` - Action name used in the empty-target message (`"audit"`, `"refit"`, `"launch"`).
+/// * `source` - Resolved repository source.
+/// * `clone_output` - Directory where remote repositories are cloned.
+/// * `concurrency` - Maximum concurrent worker tasks.
+/// * `worker` - Per-target async worker closure.
+async fn execute_batch_targets<R, F, Fut>(
+    verb: &str,
+    source: BatchSource,
+    clone_output: PathBuf,
+    concurrency: usize,
+    worker: F,
+) -> CliResult<Option<Vec<R>>>
+where
+    R: BatchReportItem,
+    F: Fn(RepoTarget) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+{
+    let Some(targets) = prepare_batch_targets(verb, source, &clone_output).await? else {
+        return Ok(None);
+    };
+
+    let concurrency = concurrency.max(1);
+    let semaphore = Arc::new(Semaphore::new(concurrency));
+    let worker = Arc::new(worker);
+    let mut tasks = JoinSet::new();
+
+    for target in targets {
+        let permit = Arc::clone(&semaphore).acquire_owned().await?;
+        let worker = Arc::clone(&worker);
+        tasks.spawn(async move {
+            let _permit = permit;
+            worker(target).await
+        });
+    }
+
+    let mut reports = Vec::with_capacity(tasks.len());
+    while let Some(result) = tasks.join_next().await {
+        reports.push(result?);
+    }
+
+    Ok(Some(reports))
+}
+
+/// Prepare the filesystem workspace for `target` and return `(source_label, path, CloneStatus)`.
+///
+/// # Arguments
+/// * `target` - Clone or local target descriptor.
+async fn prepare_target_workspace(target: RepoTarget) -> (String, PathBuf, CloneStatus) {
+    match target {
+        RepoTarget::Clone { url, dest } => {
+            if dest.exists() {
+                let msg = format!("destination exists: {}", dest.display());
+                return (url, dest, CloneStatus::Failed(msg));
+            }
+            let status = match clone_repo(&url, &dest).await {
+                Ok(()) => CloneStatus::Cloned,
+                Err(err) => CloneStatus::Failed(err.to_string()),
+            };
+            (url, dest, status)
+        }
+        RepoTarget::Local { path } => {
+            let source = path.display().to_string();
+            if !path.is_dir() {
+                let msg = format!("path not found: {}", path.display());
+                return (source, path, CloneStatus::Failed(msg));
+            }
+            (source, path, CloneStatus::Local)
+        }
+    }
+}
+
+/// Prepare a single [`RepoTarget`] (cloning or verifying local directory) and run `populate`.
+///
+/// # Arguments
+/// * `target` - Clone or local target descriptor.
+/// * `populate` - Callback invoked when the repository workspace is ready.
+async fn process_repo_target<R, F>(target: RepoTarget, populate: F) -> R
+where
+    R: BatchReportItem,
+    F: FnOnce(&mut R),
+{
+    let (source, path, status) = prepare_target_workspace(target).await;
+    let mut report = R::new_report(source, path);
+    let ready = matches!(status, CloneStatus::Cloned | CloneStatus::Local);
+    report.set_clone_status(status);
+    if ready {
+        populate(&mut report);
+    }
+    report
+}
+
+/// Execute the `audit` / `batch` workflow across all resolved targets.
+///
+/// # Arguments
+/// * `source` - Resolved repository source.
+/// * `clone_output` - Clone output directory.
+/// * `concurrency` - Max concurrency.
+/// * `mechanic_ids` - Mechanic identifiers to run.
+/// * `report` - Report output arguments.
 async fn run_audit(
     source: BatchSource,
     clone_output: PathBuf,
@@ -216,45 +523,34 @@ async fn run_audit(
     mechanic_ids: Vec<String>,
     report: OutputArgs,
 ) -> CliResult<()> {
-    let targets = load_repo_targets(source, &clone_output).await?;
-    if targets.is_empty() {
-        println!("No repositories found to audit.");
-        return Ok(());
-    }
-
-    if targets
-        .iter()
-        .any(|target| matches!(target, RepoTarget::Clone { .. }))
-    {
-        tokio::fs::create_dir_all(&clone_output).await?;
-    }
     let mechanics = Arc::new(build_mechanics(&mechanic_ids)?);
-    let concurrency = if concurrency == 0 { 1 } else { concurrency };
-    let semaphore = Arc::new(Semaphore::new(concurrency));
-    let mut tasks = JoinSet::new();
-
-    for target in targets {
-        let permit = semaphore.clone().acquire_owned().await?;
-        let mechanics = mechanics.clone();
-        tasks.spawn(async move {
-            let _permit = permit;
-            audit_target(target, mechanics).await
-        });
-    }
-
-    let mut reports = Vec::new();
-    while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok(report) => reports.push(report),
-            Err(err) => reports.push(repo_report_from_task_error(err)),
+    let worker = move |target| {
+        let mechanics = Arc::clone(&mechanics);
+        async move {
+            process_repo_target(target, |rep: &mut RepoReport| {
+                populate_audit(rep, mechanics.as_ref());
+            })
+            .await
         }
-    }
+    };
+    let Some(reports) =
+        execute_batch_targets("audit", source, clone_output, concurrency, worker).await?
+    else {
+        return Ok(());
+    };
 
-    emit_audit_reports(&reports, &report).await?;
-
-    Ok(())
+    emit_audit_reports(&reports, &report)
 }
 
+/// Execute the `refit` workflow across all resolved targets.
+///
+/// # Arguments
+/// * `source` - Resolved repository source.
+/// * `clone_output` - Clone output directory.
+/// * `concurrency` - Max concurrency.
+/// * `mechanic_ids` - Mechanic identifiers to run.
+/// * `report` - Report output arguments.
+/// * `apply` - Whether to apply fixes (`true`) or run in dry-run mode (`false`).
 async fn run_refit(
     source: BatchSource,
     clone_output: PathBuf,
@@ -263,88 +559,52 @@ async fn run_refit(
     report: OutputArgs,
     apply: bool,
 ) -> CliResult<()> {
-    let targets = load_repo_targets(source, &clone_output).await?;
-    if targets.is_empty() {
-        println!("No repositories found to refit.");
-        return Ok(());
-    }
-
-    if targets
-        .iter()
-        .any(|target| matches!(target, RepoTarget::Clone { .. }))
-    {
-        tokio::fs::create_dir_all(&clone_output).await?;
-    }
     let mechanics = Arc::new(build_mechanics(&mechanic_ids)?);
-    let concurrency = if concurrency == 0 { 1 } else { concurrency };
-    let semaphore = Arc::new(Semaphore::new(concurrency));
-    let mut tasks = JoinSet::new();
-
-    for target in targets {
-        let permit = semaphore.clone().acquire_owned().await?;
-        let mechanics = mechanics.clone();
-        tasks.spawn(async move {
-            let _permit = permit;
-            refit_target(target, mechanics, apply).await
-        });
-    }
-
-    let mut reports = Vec::new();
-    while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok(report) => reports.push(report),
-            Err(err) => reports.push(refit_report_from_task_error(err)),
+    let worker = move |target| {
+        let mechanics = Arc::clone(&mechanics);
+        async move {
+            process_repo_target(target, |rep: &mut RefitReport| {
+                populate_refit(rep, mechanics.as_ref(), apply);
+            })
+            .await
         }
-    }
+    };
+    let Some(reports) =
+        execute_batch_targets("refit", source, clone_output, concurrency, worker).await?
+    else {
+        return Ok(());
+    };
 
-    emit_refit_reports(&reports, &report).await?;
-
-    Ok(())
+    emit_refit_reports(&reports, &report)
 }
 
+/// Execute the `launch` workflow across all resolved targets.
+///
+/// # Arguments
+/// * `source` - Resolved repository source.
+/// * `clone_output` - Clone output directory.
+/// * `concurrency` - Max concurrency.
+/// * `report` - Report output arguments.
 async fn run_launch(
     source: BatchSource,
     clone_output: PathBuf,
     concurrency: usize,
     report: OutputArgs,
 ) -> CliResult<()> {
-    let targets = load_repo_targets(source, &clone_output).await?;
-    if targets.is_empty() {
-        println!("No repositories found to launch.");
+    let worker = |target| async move { process_repo_target(target, populate_launch).await };
+    let Some(reports) =
+        execute_batch_targets("launch", source, clone_output, concurrency, worker).await?
+    else {
         return Ok(());
-    }
+    };
 
-    if targets
-        .iter()
-        .any(|target| matches!(target, RepoTarget::Clone { .. }))
-    {
-        tokio::fs::create_dir_all(&clone_output).await?;
-    }
-    let concurrency = if concurrency == 0 { 1 } else { concurrency };
-    let semaphore = Arc::new(Semaphore::new(concurrency));
-    let mut tasks = JoinSet::new();
-
-    for target in targets {
-        let permit = semaphore.clone().acquire_owned().await?;
-        tasks.spawn(async move {
-            let _permit = permit;
-            launch_target(target).await
-        });
-    }
-
-    let mut reports = Vec::new();
-    while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok(report) => reports.push(report),
-            Err(err) => reports.push(launch_report_from_task_error(err)),
-        }
-    }
-
-    emit_launch_reports(&reports, &report).await?;
-
-    Ok(())
+    emit_launch_reports(&reports, &report)
 }
 
+/// Resolve [`RepoSourceArgs`] into a validated [`BatchSource`].
+///
+/// # Arguments
+/// * `source` - Raw CLI source flags.
 fn resolve_source_args(source: &RepoSourceArgs) -> CliResult<BatchSource> {
     if let Some(file) = source.file.clone() {
         return Ok(BatchSource::File(file));
@@ -352,7 +612,7 @@ fn resolve_source_args(source: &RepoSourceArgs) -> CliResult<BatchSource> {
     if let Some(url) = source.url.clone() {
         let trimmed = url.trim();
         if trimmed.is_empty() {
-            return Err("url cannot be empty".into());
+            return Err(CliError::EmptyUrl);
         }
         return Ok(BatchSource::Url(trimmed.to_string()));
     }
@@ -362,9 +622,13 @@ fn resolve_source_args(source: &RepoSourceArgs) -> CliResult<BatchSource> {
     if let Some(path) = source.path.clone() {
         return Ok(BatchSource::Path(path));
     }
-    Err("no repository source provided".into())
+    Err(CliError::MissingSource)
 }
 
+/// Load non-empty, non-comment repository URLs from a text file at `path`.
+///
+/// # Arguments
+/// * `path` - File path containing newline-delimited URLs.
 async fn load_repo_urls(path: &Path) -> CliResult<Vec<String>> {
     let contents = tokio::fs::read_to_string(path).await?;
     let urls = contents
@@ -376,6 +640,10 @@ async fn load_repo_urls(path: &Path) -> CliResult<Vec<String>> {
     Ok(urls)
 }
 
+/// List non-hidden immediate subdirectories inside `path`.
+///
+/// # Arguments
+/// * `path` - Parent directory containing local repositories.
 async fn load_repo_paths_from_dir(path: &Path) -> CliResult<Vec<PathBuf>> {
     let mut entries = tokio::fs::read_dir(path).await?;
     let mut repos = Vec::new();
@@ -394,13 +662,11 @@ async fn load_repo_paths_from_dir(path: &Path) -> CliResult<Vec<PathBuf>> {
     Ok(repos)
 }
 
-fn is_hidden_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.starts_with('.'))
-        .unwrap_or(false)
-}
-
+/// Expand a [`BatchSource`] into concrete [`RepoTarget`] items.
+///
+/// # Arguments
+/// * `source` - Resolved repository source.
+/// * `output` - Root directory for cloned repositories.
 async fn load_repo_targets(source: BatchSource, output: &Path) -> CliResult<Vec<RepoTarget>> {
     match source {
         BatchSource::File(file) => {
@@ -428,174 +694,48 @@ async fn load_repo_targets(source: BatchSource, output: &Path) -> CliResult<Vec<
     }
 }
 
+/// Validated input source for batch operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum BatchSource {
+    /// Text file containing repository URLs.
     File(PathBuf),
+    /// Single repository URL.
     Url(String),
+    /// Directory of local repositories.
     Dir(PathBuf),
+    /// Single local repository path.
     Path(PathBuf),
 }
 
+/// Concrete repository target for a worker task.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RepoTarget {
-    Clone { url: String, dest: PathBuf },
-    Local { path: PathBuf },
+    /// Remote repository to clone into `dest`.
+    Clone {
+        /// Remote Git URL.
+        url: String,
+        /// Destination directory path.
+        dest: PathBuf,
+    },
+    /// Existing local repository directory.
+    Local {
+        /// Local repository path.
+        path: PathBuf,
+    },
 }
 
-async fn audit_target(
-    target: RepoTarget,
-    mechanics: Arc<Vec<Arc<dyn Mechanic + Send + Sync>>>,
-) -> RepoReport {
-    match target {
-        RepoTarget::Clone { url, dest } => clone_and_audit(url, dest, mechanics).await,
-        RepoTarget::Local { path } => audit_local(path, mechanics).await,
-    }
-}
-
-async fn refit_target(
-    target: RepoTarget,
-    mechanics: Arc<Vec<Arc<dyn Mechanic + Send + Sync>>>,
-    apply: bool,
-) -> RefitReport {
-    match target {
-        RepoTarget::Clone { url, dest } => clone_and_refit(url, dest, mechanics, apply).await,
-        RepoTarget::Local { path } => refit_local(path, mechanics, apply).await,
-    }
-}
-
-async fn launch_target(target: RepoTarget) -> LaunchReport {
-    match target {
-        RepoTarget::Clone { url, dest } => clone_and_launch(url, dest).await,
-        RepoTarget::Local { path } => launch_local(path).await,
-    }
-}
-
-async fn clone_and_audit(
-    url: String,
-    repo_dir: PathBuf,
-    mechanics: Arc<Vec<Arc<dyn Mechanic + Send + Sync>>>,
-) -> RepoReport {
-    let mut report = RepoReport::new(url, repo_dir);
-
-    if report.path.exists() {
-        report.clone_status =
-            CloneStatus::Failed(format!("destination exists: {}", report.path.display()));
-        return report;
-    }
-
-    match clone_repo(&report.source, &report.path).await {
-        Ok(()) => report.clone_status = CloneStatus::Cloned,
-        Err(err) => {
-            report.clone_status = CloneStatus::Failed(err.to_string());
-            return report;
-        }
-    }
-
-    populate_audit(&mut report, mechanics.as_ref());
-
-    report
-}
-
-async fn clone_and_refit(
-    url: String,
-    repo_dir: PathBuf,
-    mechanics: Arc<Vec<Arc<dyn Mechanic + Send + Sync>>>,
-    apply: bool,
-) -> RefitReport {
-    let mut report = RefitReport::new(url, repo_dir);
-
-    if report.path.exists() {
-        report.clone_status =
-            CloneStatus::Failed(format!("destination exists: {}", report.path.display()));
-        return report;
-    }
-
-    match clone_repo(&report.source, &report.path).await {
-        Ok(()) => report.clone_status = CloneStatus::Cloned,
-        Err(err) => {
-            report.clone_status = CloneStatus::Failed(err.to_string());
-            return report;
-        }
-    }
-
-    populate_refit(&mut report, mechanics.as_ref(), apply);
-
-    report
-}
-
-async fn clone_and_launch(url: String, repo_dir: PathBuf) -> LaunchReport {
-    let mut report = LaunchReport::new(url, repo_dir);
-
-    if report.path.exists() {
-        report.clone_status =
-            CloneStatus::Failed(format!("destination exists: {}", report.path.display()));
-        return report;
-    }
-
-    match clone_repo(&report.source, &report.path).await {
-        Ok(()) => report.clone_status = CloneStatus::Cloned,
-        Err(err) => {
-            report.clone_status = CloneStatus::Failed(err.to_string());
-            return report;
-        }
-    }
-
-    populate_launch(&mut report);
-
-    report
-}
-
-async fn audit_local(
-    path: PathBuf,
-    mechanics: Arc<Vec<Arc<dyn Mechanic + Send + Sync>>>,
-) -> RepoReport {
-    let mut report = RepoReport::new(path.display().to_string(), path);
-    if !report.path.is_dir() {
-        report.clone_status =
-            CloneStatus::Failed(format!("path not found: {}", report.path.display()));
-        return report;
-    }
-
-    report.clone_status = CloneStatus::Local;
-    populate_audit(&mut report, mechanics.as_ref());
-    report
-}
-
-async fn refit_local(
-    path: PathBuf,
-    mechanics: Arc<Vec<Arc<dyn Mechanic + Send + Sync>>>,
-    apply: bool,
-) -> RefitReport {
-    let mut report = RefitReport::new(path.display().to_string(), path);
-    if !report.path.is_dir() {
-        report.clone_status =
-            CloneStatus::Failed(format!("path not found: {}", report.path.display()));
-        return report;
-    }
-
-    report.clone_status = CloneStatus::Local;
-    populate_refit(&mut report, mechanics.as_ref(), apply);
-    report
-}
-
-async fn launch_local(path: PathBuf) -> LaunchReport {
-    let mut report = LaunchReport::new(path.display().to_string(), path);
-    if !report.path.is_dir() {
-        report.clone_status =
-            CloneStatus::Failed(format!("path not found: {}", report.path.display()));
-        return report;
-    }
-
-    report.clone_status = CloneStatus::Local;
-    populate_launch(&mut report);
-    report
-}
-
+/// Populate `report` with language statistics and mechanic audit violations.
+///
+/// # Arguments
+/// * `report` - Target audit report to populate.
+/// * `mechanics` - Mechanics to run against `report.path`.
 fn populate_audit(report: &mut RepoReport, mechanics: &[Arc<dyn Mechanic + Send + Sync>]) {
     match inspect_language_stats(&report.path) {
         Ok(stats) => report.language_stats = Some(stats),
         Err(err) => report.audit_errors.push(format!("language stats: {err}")),
     }
 
-    for mechanic in mechanics.iter() {
+    for mechanic in mechanics {
         match mechanic.audit(&report.path) {
             Ok(mut violations) => report.violations.append(&mut violations),
             Err(err) => report
@@ -605,12 +745,18 @@ fn populate_audit(report: &mut RepoReport, mechanics: &[Arc<dyn Mechanic + Send 
     }
 }
 
+/// Populate `report` with refit dry-run diffs or applied results.
+///
+/// # Arguments
+/// * `report` - Target refit report to populate.
+/// * `mechanics` - Mechanics to run against `report.path`.
+/// * `apply` - Whether to apply fixes (`true`) or run in dry-run mode (`false`).
 fn populate_refit(
     report: &mut RefitReport,
     mechanics: &[Arc<dyn Mechanic + Send + Sync>],
     apply: bool,
 ) {
-    for mechanic in mechanics.iter() {
+    for mechanic in mechanics {
         if apply {
             match mechanic.apply(&report.path) {
                 Ok(changed) => report.results.push(format!(
@@ -631,9 +777,11 @@ fn populate_refit(
                             .results
                             .push(format!("{}: dry-run (no output)", mechanic.id()));
                     } else {
-                        report
-                            .results
-                            .push(format!("{}: dry-run\n{}", mechanic.id(), trimmed));
+                        report.results.push(format!(
+                            "{}: dry-run
+{trimmed}",
+                            mechanic.id()
+                        ));
                     }
                 }
                 Err(err) => report
@@ -644,32 +792,77 @@ fn populate_refit(
     }
 }
 
+/// Populate `report` with generated `Dockerfile` and `.gitlab-ci.yml` configurations.
+///
+/// # Arguments
+/// * `report` - Target launch report to populate.
 fn populate_launch(report: &mut LaunchReport) {
     let (dockerfile, ci_config) = generate_ci_config(&report.path);
     report.dockerfile = Some(dockerfile);
     report.ci_config = Some(ci_config);
 }
 
+/// Ambient Git environment variables that bind `git` to an outer repository or hook context.
+const GIT_LOCAL_ENV_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_AUTHOR_DATE",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_NAME",
+    "GIT_COMMON_DIR",
+    "GIT_COMMITTER_DATE",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_INTERNAL_SUPER_PREFIX",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+];
+
+/// Clone a Git repository from `url` into `dest`.
+///
+/// # Arguments
+/// * `url` - Remote repository URL or local path.
+/// * `dest` - Target directory to clone into.
 async fn clone_repo(url: &str, dest: &Path) -> CliResult<()> {
-    let status = Command::new("git")
-        .arg("clone")
-        .arg(url)
-        .arg(dest)
-        .status()
-        .await?;
+    let mut cmd = Command::new("git");
+    for key in GIT_LOCAL_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    cmd.arg("clone").arg(url).arg(dest);
+    let status = cmd.status().await?;
 
     if status.success() {
         Ok(())
     } else {
-        Err(format!("git clone failed with status {status}").into())
+        Err(CliError::GitCloneFailed {
+            status: status.to_string(),
+        })
     }
 }
 
+/// Inspect language distribution at `path` using [`TokeiInspector`].
+///
+/// # Arguments
+/// * `path` - Repository directory path.
 fn inspect_language_stats(path: &Path) -> shipshape_core::Result<LanguageDistribution> {
     let inspector = TokeiInspector::new(StdFileSystem::new());
     inspector.inspect(path)
 }
 
+/// Derive a clean directory name from a Git repository URL.
+///
+/// # Arguments
+/// * `url` - HTTPS or SSH Git repository URL.
 fn repo_dir_name(url: &str) -> String {
     let trimmed = url.trim_end_matches('/');
     let last_segment = trimmed.rsplit('/').next().unwrap_or(trimmed);
@@ -677,317 +870,374 @@ fn repo_dir_name(url: &str) -> String {
     last_segment.trim_end_matches(".git").to_string()
 }
 
-fn repo_report_from_task_error(error: tokio::task::JoinError) -> RepoReport {
-    RepoReport::failed("unknown".to_string(), PathBuf::from("."), error.to_string())
-}
-
-fn refit_report_from_task_error(error: tokio::task::JoinError) -> RefitReport {
-    RefitReport::failed("unknown".to_string(), PathBuf::from("."), error.to_string())
-}
-
-fn launch_report_from_task_error(error: tokio::task::JoinError) -> LaunchReport {
-    LaunchReport::failed("unknown".to_string(), PathBuf::from("."), error.to_string())
-}
-
-async fn emit_audit_reports(reports: &[RepoReport], output: &OutputArgs) -> CliResult<()> {
+/// Format and emit audit reports according to `output`.
+///
+/// # Arguments
+/// * `reports` - Audit reports to format.
+/// * `output` - Output format and optional file destination.
+fn emit_audit_reports(reports: &[RepoReport], output: &OutputArgs) -> CliResult<()> {
     let contents = match output.format {
         OutputFormat::Text => render_audit_text(reports),
         OutputFormat::Markdown => render_audit_markdown(reports),
         OutputFormat::Json => render_json(reports)?,
     };
-    emit_output(output, contents).await
+    emit_output(output, contents)
 }
 
-async fn emit_refit_reports(reports: &[RefitReport], output: &OutputArgs) -> CliResult<()> {
+/// Format and emit refit reports according to `output`.
+///
+/// # Arguments
+/// * `reports` - Refit reports to format.
+/// * `output` - Output format and optional file destination.
+fn emit_refit_reports(reports: &[RefitReport], output: &OutputArgs) -> CliResult<()> {
     let contents = match output.format {
         OutputFormat::Text => render_refit_text(reports),
         OutputFormat::Markdown => render_refit_markdown(reports),
         OutputFormat::Json => render_json(reports)?,
     };
-    emit_output(output, contents).await
+    emit_output(output, contents)
 }
 
-async fn emit_launch_reports(reports: &[LaunchReport], output: &OutputArgs) -> CliResult<()> {
+/// Format and emit launch reports according to `output`.
+///
+/// # Arguments
+/// * `reports` - Launch reports to format.
+/// * `output` - Output format and optional file destination.
+fn emit_launch_reports(reports: &[LaunchReport], output: &OutputArgs) -> CliResult<()> {
     let contents = match output.format {
         OutputFormat::Text => render_launch_text(reports),
         OutputFormat::Markdown => render_launch_markdown(reports),
         OutputFormat::Json => render_json(reports)?,
     };
-    emit_output(output, contents).await
+    emit_output(output, contents)
 }
 
-async fn emit_output(output: &OutputArgs, contents: String) -> CliResult<()> {
+/// Write `contents` to `output.report_output` or standard output.
+///
+/// # Arguments
+/// * `output` - Output destination settings.
+/// * `contents` - Formatted report string.
+fn emit_output(output: &OutputArgs, contents: String) -> CliResult<()> {
     if let Some(path) = &output.report_output {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(path, contents).await?;
+        shipshape_core::FileSystem::write_file(&StdFileSystem::new(), path, &contents)?;
     } else {
         print!("{contents}");
     }
     Ok(())
 }
 
+/// Append the common `Source`, `Path`, and `Status` lines to `output`, returning `true`
+/// if the repository is ready for detail rendering (`Cloned` or `Local`).
+///
+/// # Arguments
+/// * `output` - Target text buffer.
+/// * `source` - Repository source string.
+/// * `path` - Repository workspace path.
+/// * `status` - Clone status.
+fn append_text_header(
+    output: &mut String,
+    source: &str,
+    path: &Path,
+    status: &CloneStatus,
+) -> bool {
+    output.push_str(&format!(
+        "Source: {source}
+"
+    ));
+    output.push_str(&format!(
+        "Path: {}
+",
+        path.display()
+    ));
+    match status {
+        CloneStatus::Cloned => {
+            output.push_str(
+                "Status: cloned
+",
+            );
+            true
+        }
+        CloneStatus::Local => {
+            output.push_str(
+                "Status: local
+",
+            );
+            true
+        }
+        CloneStatus::Failed(error) => {
+            output.push_str(&format!(
+                "Status: failed ({error})
+
+"
+            ));
+            false
+        }
+        CloneStatus::Pending => {
+            output.push_str(
+                "Status: pending
+
+",
+            );
+            false
+        }
+    }
+}
+
+/// Render audit reports as plain text.
+///
+/// # Arguments
+/// * `reports` - Slice of audit reports.
 fn render_audit_text(reports: &[RepoReport]) -> String {
     let mut output = String::new();
     for report in reports {
-        let _ = writeln!(output, "Source: {}", report.source);
-        let _ = writeln!(output, "Path: {}", report.path.display());
-        match &report.clone_status {
-            CloneStatus::Cloned => {
-                let _ = writeln!(output, "Status: cloned");
-            }
-            CloneStatus::Local => {
-                let _ = writeln!(output, "Status: local");
-            }
-            CloneStatus::Failed(error) => {
-                let _ = writeln!(output, "Status: failed ({error})");
-                let _ = writeln!(output);
-                continue;
-            }
-            CloneStatus::Pending => {
-                let _ = writeln!(output, "Status: pending");
-                let _ = writeln!(output);
-                continue;
-            }
+        if !append_text_header(
+            &mut output,
+            &report.source,
+            &report.path,
+            &report.clone_status,
+        ) {
+            continue;
         }
 
         match &report.language_stats {
             Some(stats) if stats.is_empty() => {
-                let _ = writeln!(output, "Languages: none detected");
+                output.push_str(
+                    "Languages: none detected
+",
+                );
             }
             Some(stats) => {
-                let _ = writeln!(output, "Languages:");
+                output.push_str(
+                    "Languages:
+",
+                );
                 for (language, percent) in format_language_stats(stats) {
-                    let _ = writeln!(output, "- {language}: {percent:.2}%");
+                    output.push_str(&format!(
+                        "- {language}: {percent:.2}%
+"
+                    ));
                 }
             }
             None => {
-                let _ = writeln!(output, "Languages: unavailable");
+                output.push_str(
+                    "Languages: unavailable
+",
+                );
             }
         }
 
-        if !report.violations.is_empty() {
-            let _ = writeln!(output, "Violations:");
-            for violation in &report.violations {
-                let _ = writeln!(output, "- [{}] {}", violation.id, violation.message);
-            }
+        if report.violations.is_empty() {
+            output.push_str(
+                "Violations: none
+",
+            );
         } else {
-            let _ = writeln!(output, "Violations: none");
+            output.push_str(
+                "Violations:
+",
+            );
+            for violation in &report.violations {
+                output.push_str(&format!(
+                    "- [{}] {}
+",
+                    violation.id, violation.message
+                ));
+            }
         }
 
         if !report.audit_errors.is_empty() {
-            let _ = writeln!(output, "Audit errors:");
+            output.push_str("Audit errors:\n");
             for error in &report.audit_errors {
-                let _ = writeln!(output, "- {error}");
+                output.push_str(&format!("- {error}\n"));
             }
         }
 
-        let _ = writeln!(output);
+        output.push('\n');
     }
     output
 }
 
+/// Render refit reports as plain text.
+///
+/// # Arguments
+/// * `reports` - Slice of refit reports.
 fn render_refit_text(reports: &[RefitReport]) -> String {
     let mut output = String::new();
     for report in reports {
-        let _ = writeln!(output, "Source: {}", report.source);
-        let _ = writeln!(output, "Path: {}", report.path.display());
-        match &report.clone_status {
-            CloneStatus::Cloned => {
-                let _ = writeln!(output, "Status: cloned");
-            }
-            CloneStatus::Local => {
-                let _ = writeln!(output, "Status: local");
-            }
-            CloneStatus::Failed(error) => {
-                let _ = writeln!(output, "Status: failed ({error})");
-                let _ = writeln!(output);
-                continue;
-            }
-            CloneStatus::Pending => {
-                let _ = writeln!(output, "Status: pending");
-                let _ = writeln!(output);
-                continue;
-            }
+        if !append_text_header(
+            &mut output,
+            &report.source,
+            &report.path,
+            &report.clone_status,
+        ) {
+            continue;
         }
 
         if report.results.is_empty() {
-            let _ = writeln!(output, "Refit results: none");
+            output.push_str("Refit results: none\n");
         } else {
-            let _ = writeln!(output, "Refit results:");
+            output.push_str("Refit results:\n");
             for result in &report.results {
-                let _ = writeln!(output, "{result}");
+                output.push_str(&format!("{result}\n"));
             }
         }
 
         if !report.errors.is_empty() {
-            let _ = writeln!(output, "Refit errors:");
+            output.push_str("Refit errors:\n");
             for error in &report.errors {
-                let _ = writeln!(output, "- {error}");
+                output.push_str(&format!("- {error}\n"));
             }
         }
 
-        let _ = writeln!(output);
+        output.push('\n');
     }
     output
 }
 
+/// Render launch reports as plain text.
+///
+/// # Arguments
+/// * `reports` - Slice of launch reports.
 fn render_launch_text(reports: &[LaunchReport]) -> String {
     let mut output = String::new();
     for report in reports {
-        let _ = writeln!(output, "Source: {}", report.source);
-        let _ = writeln!(output, "Path: {}", report.path.display());
-        match &report.clone_status {
-            CloneStatus::Cloned => {
-                let _ = writeln!(output, "Status: cloned");
-            }
-            CloneStatus::Local => {
-                let _ = writeln!(output, "Status: local");
-            }
-            CloneStatus::Failed(error) => {
-                let _ = writeln!(output, "Status: failed ({error})");
-                let _ = writeln!(output);
-                continue;
-            }
-            CloneStatus::Pending => {
-                let _ = writeln!(output, "Status: pending");
-                let _ = writeln!(output);
-                continue;
-            }
+        if !append_text_header(
+            &mut output,
+            &report.source,
+            &report.path,
+            &report.clone_status,
+        ) {
+            continue;
         }
 
         match &report.dockerfile {
             Some(contents) => {
-                let _ = writeln!(output, "Dockerfile:");
-                let _ = writeln!(output, "{contents}");
+                output.push_str("Dockerfile:\n");
+                output.push_str(&format!("{contents}\n"));
             }
             None => {
-                let _ = writeln!(output, "Dockerfile: unavailable");
+                output.push_str("Dockerfile: unavailable\n");
             }
         }
 
         match &report.ci_config {
             Some(contents) => {
-                let _ = writeln!(output, ".gitlab-ci.yml:");
-                let _ = writeln!(output, "{contents}");
+                output.push_str(".gitlab-ci.yml:\n");
+                output.push_str(&format!("{contents}\n"));
             }
             None => {
-                let _ = writeln!(output, "CI config: unavailable");
+                output.push_str("CI config: unavailable\n");
             }
         }
 
         if !report.errors.is_empty() {
-            let _ = writeln!(output, "Launch errors:");
+            output.push_str("Launch errors:\n");
             for error in &report.errors {
-                let _ = writeln!(output, "- {error}");
+                output.push_str(&format!("- {error}\n"));
             }
         }
 
-        let _ = writeln!(output);
+        output.push('\n');
     }
     output
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BatchSource, CloneStatus, LaunchReport, OutputArgs, OutputFormat, RefitReport, RepoReport,
-        RepoSourceArgs, audit_local, clone_and_audit, clone_repo, emit_audit_reports,
-        emit_launch_reports, emit_refit_reports, launch_local, load_repo_paths_from_dir,
-        load_repo_targets, load_repo_urls, populate_audit, populate_launch, populate_refit,
-        refit_local, render_audit_text, render_launch_text, render_refit_text, repo_dir_name,
-        resolve_source_args, run_audit, run_launch, run_refit,
-    };
-    use shipshape_core::{Mechanic, ShipShapeError, Violation, format_language_stats};
+    use super::*;
+    use shipshape_core::{FileSystem as _, Violation};
     use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
-    use std::sync::Arc;
+    use std::process::Command as StdCommand;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[test]
-    fn repo_dir_name_handles_https() {
-        let name = repo_dir_name("https://github.com/org/repo.git");
-        assert_eq!(name, "repo");
+    /// Atomic counter for unique test directory names.
+    static UNIQUE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Generate a unique directory name for tests.
+    fn unique_dir_name() -> PathBuf {
+        let pid = std::process::id();
+        let counter = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        PathBuf::from(format!("shipshape_cli_test_{pid}_{counter}"))
     }
 
     #[test]
-    fn repo_dir_name_handles_ssh() {
-        let name = repo_dir_name("git@github.com:org/repo.git");
-        assert_eq!(name, "repo");
+    fn repo_dir_name_handles_https_and_ssh() {
+        super::main();
+        assert_eq!(repo_dir_name("https://github.com/org/repo.git"), "repo");
+        assert_eq!(repo_dir_name("git@github.com:org/repo.git"), "repo");
     }
 
     #[test]
-    fn resolve_source_prefers_file_over_url() {
-        let args = RepoSourceArgs {
+    fn batch_report_item_trait_covers_all_report_types() {
+        let mut r1 = RepoReport::new_report("s".to_string(), PathBuf::from("."));
+        r1.set_clone_status(CloneStatus::Local);
+        assert_eq!(r1.clone_status, CloneStatus::Local);
+
+        let mut r2 = RefitReport::new_report("s".to_string(), PathBuf::from("."));
+        r2.set_clone_status(CloneStatus::Local);
+        assert_eq!(r2.clone_status, CloneStatus::Local);
+
+        let mut r3 = LaunchReport::new_report("s".to_string(), PathBuf::from("."));
+        r3.set_clone_status(CloneStatus::Local);
+        assert_eq!(r3.clone_status, CloneStatus::Local);
+    }
+
+    #[test]
+    fn resolve_source_handles_all_variants_and_errors() -> CliResult<()> {
+        let file_args = RepoSourceArgs {
             file: Some(PathBuf::from("repos.txt")),
             url: Some("https://example.com/repo.git".to_string()),
             dir: None,
             path: None,
         };
+        assert_eq!(
+            resolve_source_args(&file_args)?,
+            BatchSource::File(PathBuf::from("repos.txt"))
+        );
 
-        let source = resolve_source_args(&args).expect("source");
-        match source {
-            BatchSource::File(path) => assert_eq!(path, PathBuf::from("repos.txt")),
-            _ => panic!("expected file source"),
-        }
-    }
-
-    #[test]
-    fn resolve_source_trims_url() {
-        let args = RepoSourceArgs {
+        let url_args = RepoSourceArgs {
             file: None,
             url: Some(" https://example.com/repo.git ".to_string()),
             dir: None,
             path: None,
         };
+        assert_eq!(
+            resolve_source_args(&url_args)?,
+            BatchSource::Url("https://example.com/repo.git".to_string())
+        );
 
-        let source = resolve_source_args(&args).expect("source");
-        match source {
-            BatchSource::Url(url) => assert_eq!(url, "https://example.com/repo.git"),
-            _ => panic!("expected url source"),
-        }
-    }
+        let dir_args = RepoSourceArgs {
+            file: None,
+            url: None,
+            dir: Some(PathBuf::from("/tmp/dir")),
+            path: None,
+        };
+        assert_eq!(
+            resolve_source_args(&dir_args)?,
+            BatchSource::Dir(PathBuf::from("/tmp/dir"))
+        );
 
-    #[tokio::test]
-    async fn load_repo_paths_from_dir_filters_hidden() {
-        let root = std::env::temp_dir().join(unique_dir_name());
-        let repo_a = root.join("repo-a");
-        let repo_b = root.join("repo-b");
-        let hidden = root.join(".hidden");
-        std::fs::create_dir_all(&repo_a).expect("repo a");
-        std::fs::create_dir_all(&repo_b).expect("repo b");
-        std::fs::create_dir_all(&hidden).expect("hidden dir");
-        std::fs::write(root.join("notes.txt"), "data").expect("file");
+        let path_args = RepoSourceArgs {
+            file: None,
+            url: None,
+            dir: None,
+            path: Some(PathBuf::from("/tmp/path")),
+        };
+        assert_eq!(
+            resolve_source_args(&path_args)?,
+            BatchSource::Path(PathBuf::from("/tmp/path"))
+        );
 
-        let mut repos = load_repo_paths_from_dir(&root).await.expect("repos");
-        repos.sort();
-
-        assert_eq!(repos, vec![repo_a, repo_b]);
-
-        std::fs::remove_dir_all(&root).expect("cleanup");
-    }
-
-    static UNIQUE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-    fn unique_dir_name() -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        let counter = UNIQUE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        PathBuf::from(format!("shipshape_cli_test_{nanos}_{counter}"))
-    }
-
-    #[test]
-    fn resolve_source_errors_when_missing_or_empty() {
         let empty_url = RepoSourceArgs {
             file: None,
             url: Some("   ".to_string()),
             dir: None,
             path: None,
         };
-        assert!(resolve_source_args(&empty_url).is_err());
+        assert!(matches!(
+            resolve_source_args(&empty_url),
+            Err(CliError::EmptyUrl)
+        ));
 
         let missing = RepoSourceArgs {
             file: None,
@@ -995,450 +1245,385 @@ mod tests {
             dir: None,
             path: None,
         };
-        assert!(resolve_source_args(&missing).is_err());
+        assert!(matches!(
+            resolve_source_args(&missing),
+            Err(CliError::MissingSource)
+        ));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn load_repo_urls_ignores_comments_and_blank_lines() {
+    async fn load_repo_paths_and_urls_and_targets() -> CliResult<()> {
         let root = std::env::temp_dir().join(unique_dir_name());
-        std::fs::create_dir_all(&root).expect("create temp dir");
+        let batch_dir = root.join("batch");
+        let repo_a = batch_dir.join("repo-a");
+        let repo_b = batch_dir.join("repo-b");
+        let hidden = batch_dir.join(".hidden");
+        std::fs::create_dir_all(&repo_a)?;
+        std::fs::create_dir_all(&repo_b)?;
+        std::fs::create_dir_all(&hidden)?;
+        let notes = batch_dir.join("notes.txt");
+        std::fs::write(&notes, "data")?;
+
+        let repos = load_repo_paths_from_dir(&batch_dir).await?;
+        assert_eq!(repos, vec![repo_a.clone(), repo_b]);
+
         let file_path = root.join("repos.txt");
-        std::fs::write(
-            &file_path,
-            "# comment\n\nhttps://example.com/a.git\n  \nhttps://example.com/b.git\n",
-        )
-        .expect("write repo list");
-
-        let urls = load_repo_urls(&file_path).await.expect("urls");
-
+        let list_body = "# comment\n\nhttps://example.com/a.git\n  \nhttps://example.com/b.git\n";
+        std::fs::write(&file_path, list_body)?;
+        let urls = load_repo_urls(&file_path).await?;
         assert_eq!(
             urls,
             vec!["https://example.com/a.git", "https://example.com/b.git"]
         );
 
-        std::fs::remove_dir_all(&root).expect("cleanup");
-    }
-
-    #[tokio::test]
-    async fn load_repo_targets_supports_all_sources() {
-        let root = std::env::temp_dir().join(unique_dir_name());
-        let batch_dir = root.join("batch");
-        std::fs::create_dir_all(&batch_dir).expect("create dir");
-        let file_path = root.join("repos.txt");
-        std::fs::write(&file_path, "https://example.com/a.git\n").expect("write file");
-        let repo_dir = batch_dir.join("repo-a");
-        std::fs::create_dir_all(&repo_dir).expect("repo dir");
-
         let output = root.join("out");
-
-        let file_targets = load_repo_targets(BatchSource::File(file_path), &output)
-            .await
-            .expect("file targets");
-        assert_eq!(file_targets.len(), 1);
-
-        let url_targets = load_repo_targets(
-            BatchSource::Url("https://example.com/b.git".to_string()),
-            &output,
-        )
-        .await
-        .expect("url targets");
+        let file_targets = load_repo_targets(BatchSource::File(file_path), &output).await?;
+        assert_eq!(file_targets.len(), 2);
+        let url_source = BatchSource::Url("https://example.com/b.git".to_string());
+        let url_targets = load_repo_targets(url_source, &output).await?;
         assert_eq!(url_targets.len(), 1);
-
-        let dir_targets = load_repo_targets(BatchSource::Dir(batch_dir.clone()), &output)
-            .await
-            .expect("dir targets");
-        assert_eq!(dir_targets.len(), 1);
-
-        let path_targets = load_repo_targets(BatchSource::Path(repo_dir.clone()), &output)
-            .await
-            .expect("path targets");
+        let dir_targets = load_repo_targets(BatchSource::Dir(batch_dir), &output).await?;
+        assert_eq!(dir_targets.len(), 2);
+        let path_targets = load_repo_targets(BatchSource::Path(repo_a), &output).await?;
         assert_eq!(path_targets.len(), 1);
 
-        std::fs::remove_dir_all(&root).expect("cleanup");
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn audit_refit_launch_local_fail_when_missing() {
+    async fn process_repo_target_handles_missing_local_existing_dest_and_cloning() -> CliResult<()>
+    {
         let missing = std::env::temp_dir().join(unique_dir_name());
-        let mechanics = Arc::new(Vec::new());
+        let local_fail: LaunchReport =
+            process_repo_target(RepoTarget::Local { path: missing }, populate_launch).await;
+        assert!(matches!(local_fail.clone_status, CloneStatus::Failed(_)));
 
-        let audit_report = audit_local(missing.clone(), mechanics.clone()).await;
-        assert!(matches!(audit_report.clone_status, CloneStatus::Failed(_)));
+        let existing_dest = std::env::temp_dir().join(unique_dir_name());
+        std::fs::create_dir_all(&existing_dest)?;
+        let existing_target = RepoTarget::Clone {
+            url: "https://example.com/repo.git".to_string(),
+            dest: existing_dest.clone(),
+        };
+        let dest_fail: LaunchReport = process_repo_target(existing_target, populate_launch).await;
+        assert!(matches!(dest_fail.clone_status, CloneStatus::Failed(_)));
+        std::fs::remove_dir_all(&existing_dest)?;
 
-        let refit_report = refit_local(missing.clone(), mechanics.clone(), false).await;
-        assert!(matches!(refit_report.clone_status, CloneStatus::Failed(_)));
-
-        let launch_report = launch_local(missing.clone()).await;
-        assert!(matches!(launch_report.clone_status, CloneStatus::Failed(_)));
-    }
-
-    #[tokio::test]
-    async fn clone_repo_handles_success_and_failure() {
-        let source = init_git_repo();
+        // Successful clone & failed clone
+        let source = init_git_repo()?;
+        let source_str = source.to_string_lossy().to_string();
         let dest = std::env::temp_dir().join(unique_dir_name());
-
-        clone_repo(source.to_str().unwrap(), &dest)
-            .await
-            .expect("clone succeeds");
+        let clone_target = RepoTarget::Clone {
+            url: source_str,
+            dest: dest.clone(),
+        };
+        let cloned: LaunchReport = process_repo_target(clone_target, populate_launch).await;
+        assert_eq!(cloned.clone_status, CloneStatus::Cloned);
+        assert!(cloned.dockerfile.is_some());
 
         let bad_dest = std::env::temp_dir().join(unique_dir_name());
         let missing_repo = std::env::temp_dir().join(unique_dir_name());
-        let result = clone_repo(missing_repo.to_str().unwrap(), &bad_dest).await;
-        assert!(result.is_err());
+        let missing_str = missing_repo.to_string_lossy().to_string();
+        let bad_target = RepoTarget::Clone {
+            url: missing_str,
+            dest: bad_dest,
+        };
+        let clone_fail: LaunchReport = process_repo_target(bad_target, populate_launch).await;
+        assert!(matches!(clone_fail.clone_status, CloneStatus::Failed(_)));
 
-        std::fs::remove_dir_all(&source).expect("cleanup source");
-        std::fs::remove_dir_all(&dest).expect("cleanup dest");
-    }
-
-    #[tokio::test]
-    async fn clone_and_audit_handles_existing_destination() {
-        let source = "https://example.com/repo.git".to_string();
-        let dest = std::env::temp_dir().join(unique_dir_name());
-        std::fs::create_dir_all(&dest).expect("create dest");
-
-        let mechanics = Arc::new(Vec::new());
-        let report = clone_and_audit(source, dest.clone(), mechanics).await;
-
-        assert!(matches!(report.clone_status, CloneStatus::Failed(_)));
-
-        std::fs::remove_dir_all(&dest).expect("cleanup dest");
+        std::fs::remove_dir_all(&source)?;
+        std::fs::remove_dir_all(&dest)?;
+        Ok(())
     }
 
     #[test]
-    fn populate_audit_collects_language_stats_and_violations() {
-        let repo = temp_repo_with_file("src/main.rs", "fn main() {}\n");
-        let mut report = RepoReport::new("local".to_string(), repo.clone());
-        let mechanics: Vec<Arc<dyn Mechanic + Send + Sync>> = vec![Arc::new(TestMechanic {
-            id: "demo",
-            audit_result: Ok(vec![Violation {
-                id: "demo".to_string(),
-                message: "violation".to_string(),
-            }]),
-            dry_run_result: Ok(String::new()),
-            apply_result: Ok(false),
-        })];
-
-        populate_audit(&mut report, &mechanics);
-
-        assert!(report.language_stats.is_some());
-        assert_eq!(report.violations.len(), 1);
-
-        std::fs::remove_dir_all(&repo).expect("cleanup repo");
-    }
-
-    #[test]
-    fn populate_audit_tracks_language_errors() {
-        let mut report = RepoReport::new(
-            "missing".to_string(),
-            std::env::temp_dir().join(unique_dir_name()),
-        );
-        let mechanics = Vec::new();
-
-        populate_audit(&mut report, &mechanics);
-
-        assert!(!report.audit_errors.is_empty());
-    }
-
-    #[test]
-    fn populate_refit_handles_apply_and_dry_run_paths() {
-        let repo = temp_repo_with_file("main.rs", "fn main() {}\n");
-        let mut report = RefitReport::new("local".to_string(), repo.clone());
+    fn populate_audit_refit_and_launch_cover_all_mechanic_branches() -> CliResult<()> {
+        let repo = temp_repo_with_file("src/main.rs", "fn main() {}\n")?;
+        let mut audit_report = RepoReport::new("local".to_string(), repo.clone());
         let mechanics: Vec<Arc<dyn Mechanic + Send + Sync>> = vec![
             Arc::new(TestMechanic {
-                id: "apply",
-                audit_result: Ok(Vec::new()),
+                id: "ok-mech",
+                audit_result: Ok(vec![Violation {
+                    id: "ok-mech".to_string(),
+                    message: "violation".to_string(),
+                }]),
                 dry_run_result: Ok(String::new()),
                 apply_result: Ok(true),
             }),
             Arc::new(TestMechanic {
-                id: "dry",
+                id: "diff-mech",
                 audit_result: Ok(Vec::new()),
                 dry_run_result: Ok("diff".to_string()),
                 apply_result: Ok(false),
             }),
             Arc::new(TestMechanic {
-                id: "err",
-                audit_result: Ok(Vec::new()),
-                dry_run_result: Err("bad".to_string()),
-                apply_result: Err("apply bad".to_string()),
+                id: "err-mech",
+                audit_result: Err("audit boom".to_string()),
+                dry_run_result: Err("dry boom".to_string()),
+                apply_result: Err("apply boom".to_string()),
             }),
         ];
 
-        populate_refit(&mut report, &mechanics, true);
-        assert!(report.results.iter().any(|line| line.contains("apply")));
-        assert!(report.errors.iter().any(|line| line.contains("apply bad")));
+        populate_audit(&mut audit_report, &mechanics);
+        assert!(audit_report.language_stats.is_some());
+        assert_eq!(audit_report.violations.len(), 1);
+        assert_eq!(audit_report.audit_errors.len(), 1);
 
-        let mut report = RefitReport::new("local".to_string(), repo.clone());
-        populate_refit(&mut report, &mechanics, false);
-        assert!(report.results.iter().any(|line| line.contains("dry-run")));
-        assert!(report.errors.iter().any(|line| line.contains("bad")));
+        let mut missing_audit = RepoReport::new(
+            "missing".to_string(),
+            std::env::temp_dir().join(unique_dir_name()),
+        );
+        populate_audit(&mut missing_audit, &[]);
+        assert!(!missing_audit.audit_errors.is_empty());
 
-        std::fs::remove_dir_all(&repo).expect("cleanup repo");
+        let mut apply_report = RefitReport::new("local".to_string(), repo.clone());
+        populate_refit(&mut apply_report, &mechanics, true);
+        assert!(
+            apply_report
+                .results
+                .iter()
+                .any(|r| r.contains("changes: yes"))
+        );
+        assert!(
+            apply_report
+                .results
+                .iter()
+                .any(|r| r.contains("changes: no"))
+        );
+        assert!(apply_report.errors.iter().any(|e| e.contains("apply boom")));
+
+        let mut dry_report = RefitReport::new("local".to_string(), repo.clone());
+        populate_refit(&mut dry_report, &mechanics, false);
+        assert!(
+            dry_report
+                .results
+                .iter()
+                .any(|r| r.contains("dry-run (no output)"))
+        );
+        assert!(dry_report.results.iter().any(|r| r.contains("diff")));
+        assert!(dry_report.errors.iter().any(|e| e.contains("dry boom")));
+
+        let mut launch_report = LaunchReport::new("local".to_string(), repo.clone());
+        populate_launch(&mut launch_report);
+        assert!(launch_report.dockerfile.is_some());
+        assert!(launch_report.ci_config.is_some());
+
+        std::fs::remove_dir_all(&repo)?;
+        Ok(())
     }
 
     #[test]
-    fn populate_launch_sets_outputs() {
-        let repo = temp_repo_with_file("Cargo.toml", "[package]\nname = \"demo\"\n");
-        let mut report = LaunchReport::new("local".to_string(), repo.clone());
-
-        populate_launch(&mut report);
-
-        assert!(report.dockerfile.is_some());
-        assert!(report.ci_config.is_some());
-
-        std::fs::remove_dir_all(&repo).expect("cleanup repo");
-    }
-
-    #[test]
-    fn format_language_stats_sorts_descending() {
-        let mut stats = BTreeMap::new();
-        stats.insert("Rust".to_string(), 40.0);
-        stats.insert("Python".to_string(), 60.0);
-        let sorted = format_language_stats(&stats);
-
-        assert_eq!(sorted[0].0, "Python");
-        assert_eq!(sorted[1].0, "Rust");
-    }
-
-    #[test]
-    fn render_audit_text_covers_branches() {
-        let mut report_a = RepoReport::new("cloned".to_string(), PathBuf::from("/tmp/a"));
-        report_a.clone_status = CloneStatus::Cloned;
+    fn render_text_functions_cover_all_status_and_content_branches() {
+        let mut audit_a = RepoReport::new("cloned".to_string(), PathBuf::from("/tmp/a"));
+        audit_a.clone_status = CloneStatus::Cloned;
         let mut stats = BTreeMap::new();
         stats.insert("Rust".to_string(), 80.0);
-        report_a.language_stats = Some(stats);
-        report_a.violations = vec![Violation {
+        audit_a.language_stats = Some(stats);
+        audit_a.violations = vec![Violation {
             id: "v1".to_string(),
             message: "m1".to_string(),
         }];
 
-        let mut report_b = RepoReport::new("local".to_string(), PathBuf::from("/tmp/b"));
-        report_b.clone_status = CloneStatus::Local;
-        report_b.language_stats = Some(BTreeMap::new());
-        report_b.audit_errors = vec!["err".to_string()];
+        let mut audit_b = RepoReport::new("local".to_string(), PathBuf::from("/tmp/b"));
+        audit_b.clone_status = CloneStatus::Local;
+        audit_b.language_stats = Some(BTreeMap::new());
+        audit_b.audit_errors = vec!["err".to_string()];
 
-        let mut report_c = RepoReport::new("none".to_string(), PathBuf::from("/tmp/c"));
-        report_c.clone_status = CloneStatus::Cloned;
-        report_c.language_stats = None;
+        let mut audit_c = RepoReport::new("none".to_string(), PathBuf::from("/tmp/c"));
+        audit_c.clone_status = CloneStatus::Cloned;
+        audit_c.language_stats = None;
 
-        let mut report_failed = RepoReport::new("failed".to_string(), PathBuf::from("/tmp/d"));
-        report_failed.clone_status = CloneStatus::Failed("oops".to_string());
+        let mut audit_failed = RepoReport::new("failed".to_string(), PathBuf::from("/tmp/d"));
+        audit_failed.clone_status = CloneStatus::Failed("oops".to_string());
 
-        let mut report_pending = RepoReport::new("pending".to_string(), PathBuf::from("/tmp/e"));
-        report_pending.clone_status = CloneStatus::Pending;
+        let mut audit_pending = RepoReport::new("pending".to_string(), PathBuf::from("/tmp/e"));
+        audit_pending.clone_status = CloneStatus::Pending;
 
-        let output =
-            render_audit_text(&[report_a, report_b, report_c, report_failed, report_pending]);
+        let audit_text =
+            render_audit_text(&[audit_a, audit_b, audit_c, audit_failed, audit_pending]);
+        assert!(audit_text.contains("Status: cloned"));
+        assert!(audit_text.contains("Status: local"));
+        assert!(audit_text.contains("Status: failed (oops)"));
+        assert!(audit_text.contains("Status: pending"));
+        assert!(audit_text.contains("Languages: none detected"));
+        assert!(audit_text.contains("Languages: unavailable"));
+        assert!(audit_text.contains("Violations: none"));
+        assert!(audit_text.contains("[v1] m1"));
+        assert!(audit_text.contains("Audit errors:"));
 
-        assert!(output.contains("Status: cloned"));
-        assert!(output.contains("Status: local"));
-        assert!(output.contains("Status: failed (oops)"));
-        assert!(output.contains("Status: pending"));
-        assert!(output.contains("Languages: none detected"));
-        assert!(output.contains("Languages: unavailable"));
-        assert!(output.contains("Violations: none"));
-        assert!(output.contains("[v1] m1"));
-        assert!(output.contains("Audit errors:"));
-    }
+        let mut refit_a = RefitReport::new("cloned".to_string(), PathBuf::from("/tmp/a"));
+        refit_a.clone_status = CloneStatus::Cloned;
+        refit_a.results = vec!["apply: ok".to_string()];
+        let mut refit_b = RefitReport::new("local".to_string(), PathBuf::from("/tmp/b"));
+        refit_b.clone_status = CloneStatus::Local;
+        refit_b.errors = vec!["err".to_string()];
+        let mut refit_failed = RefitReport::new("failed".to_string(), PathBuf::from("/tmp/c"));
+        refit_failed.clone_status = CloneStatus::Failed("oops".to_string());
+        let refit_text = render_refit_text(&[refit_a, refit_b, refit_failed]);
+        assert!(refit_text.contains("apply: ok"));
+        assert!(refit_text.contains("Refit results: none"));
+        assert!(refit_text.contains("Refit errors:"));
 
-    #[test]
-    fn render_refit_text_covers_branches() {
-        let mut report_a = RefitReport::new("cloned".to_string(), PathBuf::from("/tmp/a"));
-        report_a.clone_status = CloneStatus::Cloned;
-        report_a.results = vec!["apply: ok".to_string()];
-
-        let mut report_b = RefitReport::new("local".to_string(), PathBuf::from("/tmp/b"));
-        report_b.clone_status = CloneStatus::Local;
-        report_b.errors = vec!["err".to_string()];
-
-        let mut report_failed = RefitReport::new("failed".to_string(), PathBuf::from("/tmp/c"));
-        report_failed.clone_status = CloneStatus::Failed("oops".to_string());
-
-        let mut report_pending = RefitReport::new("pending".to_string(), PathBuf::from("/tmp/d"));
-        report_pending.clone_status = CloneStatus::Pending;
-
-        let output = render_refit_text(&[report_a, report_b, report_failed, report_pending]);
-
-        assert!(output.contains("Refit results:"));
-        assert!(output.contains("apply: ok"));
-        assert!(output.contains("Refit results: none"));
-        assert!(output.contains("Refit errors:"));
-        assert!(output.contains("Status: failed (oops)"));
-        assert!(output.contains("Status: pending"));
-    }
-
-    #[test]
-    fn render_launch_text_covers_branches() {
-        let mut report_a = LaunchReport::new("cloned".to_string(), PathBuf::from("/tmp/a"));
-        report_a.clone_status = CloneStatus::Cloned;
-        report_a.dockerfile = Some("FROM rust".to_string());
-        report_a.ci_config = Some("stages:".to_string());
-
-        let mut report_b = LaunchReport::new("local".to_string(), PathBuf::from("/tmp/b"));
-        report_b.clone_status = CloneStatus::Local;
-        report_b.errors = vec!["err".to_string()];
-
-        let mut report_failed = LaunchReport::new("failed".to_string(), PathBuf::from("/tmp/c"));
-        report_failed.clone_status = CloneStatus::Failed("oops".to_string());
-
-        let mut report_pending = LaunchReport::new("pending".to_string(), PathBuf::from("/tmp/d"));
-        report_pending.clone_status = CloneStatus::Pending;
-
-        let output = render_launch_text(&[report_a, report_b, report_failed, report_pending]);
-
-        assert!(output.contains("Dockerfile:"));
-        assert!(output.contains("FROM rust"));
-        assert!(output.contains(".gitlab-ci.yml:"));
-        assert!(output.contains("CI config: unavailable"));
-        assert!(output.contains("Launch errors:"));
-        assert!(output.contains("Status: failed (oops)"));
-        assert!(output.contains("Status: pending"));
+        let mut launch_a = LaunchReport::new("cloned".to_string(), PathBuf::from("/tmp/a"));
+        launch_a.clone_status = CloneStatus::Cloned;
+        launch_a.dockerfile = Some("FROM rust".to_string());
+        launch_a.ci_config = Some("stages:".to_string());
+        let mut launch_b = LaunchReport::new("local".to_string(), PathBuf::from("/tmp/b"));
+        launch_b.clone_status = CloneStatus::Local;
+        launch_b.errors = vec!["err".to_string()];
+        let mut launch_failed = LaunchReport::new("failed".to_string(), PathBuf::from("/tmp/c"));
+        launch_failed.clone_status = CloneStatus::Failed("oops".to_string());
+        let launch_text = render_launch_text(&[launch_a, launch_b, launch_failed]);
+        assert!(launch_text.contains("FROM rust"));
+        assert!(launch_text.contains("Dockerfile: unavailable"));
+        assert!(launch_text.contains("CI config: unavailable"));
+        assert!(launch_text.contains("Launch errors:"));
     }
 
     #[tokio::test]
-    async fn emit_reports_support_formats() {
+    async fn emit_reports_and_run_cli_subcommands() -> CliResult<()> {
         let root = std::env::temp_dir().join(unique_dir_name());
+        std::fs::create_dir_all(&root)?;
 
-        let audit_path = root.join("out/audit.md");
-        let output = OutputArgs {
+        let audit_md = root.join("sub/audit.md");
+        let audit_reps = [RepoReport::new("r".to_string(), PathBuf::from("/tmp/r"))];
+        let md_out = OutputArgs {
             format: OutputFormat::Markdown,
-            report_output: Some(audit_path.clone()),
+            report_output: Some(audit_md.clone()),
         };
-        let report = RepoReport::new("repo".to_string(), PathBuf::from("/tmp/repo"));
-        emit_audit_reports(&[report], &output)
-            .await
-            .expect("emit markdown");
-        let contents = std::fs::read_to_string(&audit_path).expect("read markdown");
-        assert!(contents.contains("# ShipShape Audit Report"));
+        emit_audit_reports(&audit_reps, &md_out)?;
+        assert!(std::fs::read_to_string(&audit_md)?.contains("# ShipShape Audit Report"));
 
-        let json_path = root.join("out/refit.json");
-        let output = OutputArgs {
+        let json_out = OutputArgs {
             format: OutputFormat::Json,
-            report_output: Some(json_path.clone()),
+            report_output: Some(root.join("sub/audit.json")),
         };
-        let report = RefitReport::new("repo".to_string(), PathBuf::from("/tmp/repo"));
-        emit_refit_reports(&[report], &output)
-            .await
-            .expect("emit json");
-        let contents = std::fs::read_to_string(&json_path).expect("read json");
-        assert!(contents.contains("\"cloneStatus\""));
+        emit_audit_reports(&audit_reps, &json_out)?;
 
-        let output = OutputArgs {
-            format: OutputFormat::Text,
-            report_output: None,
+        let refit_reps = [RefitReport::new("r".to_string(), PathBuf::from("/tmp/r"))];
+        let refit_md_out = OutputArgs {
+            format: OutputFormat::Markdown,
+            report_output: Some(root.join("sub/refit.md")),
         };
-        let report = LaunchReport::new("repo".to_string(), PathBuf::from("/tmp/repo"));
-        emit_launch_reports(&[report], &output)
-            .await
-            .expect("emit text");
+        emit_refit_reports(&refit_reps, &refit_md_out)?;
+        let refit_json_out = OutputArgs {
+            format: OutputFormat::Json,
+            report_output: Some(root.join("sub/refit.json")),
+        };
+        emit_refit_reports(&refit_reps, &refit_json_out)?;
 
-        std::fs::remove_dir_all(&root).expect("cleanup");
+        let launch_reps = [LaunchReport::new("r".to_string(), PathBuf::from("/tmp/r"))];
+        let launch_md_out = OutputArgs {
+            format: OutputFormat::Markdown,
+            report_output: Some(root.join("sub/launch.md")),
+        };
+        emit_launch_reports(&launch_reps, &launch_md_out)?;
+        let launch_json_out = OutputArgs {
+            format: OutputFormat::Json,
+            report_output: Some(root.join("sub/launch.json")),
+        };
+        emit_launch_reports(&launch_reps, &launch_json_out)?;
+
+        // Exercise empty directory for audit, refit, and launch
+        let empty_dir = root.join("empty");
+        std::fs::create_dir_all(&empty_dir)?;
+        let empty_str = empty_dir.to_string_lossy().to_string();
+        run_cli_from_iter(&["shipshape", "batch", "--dir", &empty_str][..]).await?;
+        run_cli_from_iter(&["shipshape", "refit", "--dir", &empty_str][..]).await?;
+        run_cli_from_iter(&["shipshape", "launch", "--dir", &empty_str][..]).await?;
+
+        // Exercise populated local repository and remote clone via CLI parser
+        let git_repo = init_git_repo()?;
+        let git_repo_str = git_repo.to_string_lossy().to_string();
+        let clone_out = root.join("clones");
+        let clone_out_str = clone_out.to_string_lossy().to_string();
+        let audit_args = [
+            "shipshape",
+            "audit",
+            "--url",
+            &git_repo_str,
+            "--output",
+            &clone_out_str,
+        ];
+        run_cli_from_iter(&audit_args[..]).await?;
+
+        let refit_args = [
+            "shipshape",
+            "refit",
+            "--path",
+            &git_repo_str,
+            "--mechanic",
+            "noop",
+        ];
+        run_cli_from_iter(&refit_args[..]).await?;
+        run_cli_from_iter(&["shipshape", "launch", "--path", &git_repo_str][..]).await?;
+
+        // Exercise login error via CLI parser (empty server-url)
+        let login_args = ["shipshape", "login", "--server-url", "   "];
+        let login_res = run_cli_from_iter(&login_args[..]).await;
+        assert!(matches!(login_res, Err(CliError::EmptyServerUrl)));
+
+        std::fs::remove_dir_all(&git_repo)?;
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
-    #[tokio::test]
-    async fn run_flows_handle_empty_and_local_targets() {
-        let root = std::env::temp_dir().join(unique_dir_name());
-        std::fs::create_dir_all(&root).expect("create root");
-        let output = root.join("out");
-        let report = OutputArgs {
-            format: OutputFormat::Text,
-            report_output: None,
-        };
-
-        run_audit(
-            BatchSource::Dir(root.clone()),
-            output.clone(),
-            1,
-            Vec::new(),
-            report.clone(),
-        )
-        .await
-        .expect("audit empty");
-
-        let repo = temp_repo_with_file("src/lib.rs", "pub fn demo() {}\n");
-
-        run_audit(
-            BatchSource::Path(repo.clone()),
-            output.clone(),
-            1,
-            Vec::new(),
-            report.clone(),
-        )
-        .await
-        .expect("audit local");
-
-        run_refit(
-            BatchSource::Path(repo.clone()),
-            output.clone(),
-            0,
-            vec!["noop".to_string()],
-            report.clone(),
-            false,
-        )
-        .await
-        .expect("refit local");
-
-        run_launch(
-            BatchSource::Path(repo.clone()),
-            output.clone(),
-            1,
-            report.clone(),
-        )
-        .await
-        .expect("launch local");
-
-        std::fs::remove_dir_all(&repo).expect("cleanup repo");
-        std::fs::remove_dir_all(&root).expect("cleanup root");
-    }
-
-    fn temp_repo_with_file(rel_path: &str, contents: &str) -> PathBuf {
+    /// Create a temporary repository containing `rel_path` with `contents`.
+    fn temp_repo_with_file(rel_path: &str, contents: &str) -> CliResult<PathBuf> {
         let root = std::env::temp_dir().join(unique_dir_name());
         let file_path = root.join(rel_path);
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent).expect("create dir");
+        StdFileSystem::new().write_file(&file_path, contents)?;
+        Ok(root)
+    }
+
+    /// Run a local `git` command in `root` with ambient repository environment variables removed.
+    fn run_test_git(root: &Path, args: &[&str]) -> CliResult<()> {
+        let mut cmd = StdCommand::new("git");
+        for key in GIT_LOCAL_ENV_VARS {
+            cmd.env_remove(key);
         }
-        std::fs::write(&file_path, contents).expect("write file");
-        root
+        let _ = cmd.args(args).current_dir(root).status()?;
+        Ok(())
     }
 
-    fn init_git_repo() -> PathBuf {
+    /// Initialize a local Git repository with a single commit for clone tests.
+    fn init_git_repo() -> CliResult<PathBuf> {
         let root = std::env::temp_dir().join(unique_dir_name());
-        std::fs::create_dir_all(&root).expect("create repo");
-        Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&root)
-            .status()
-            .expect("git init");
-        std::fs::write(root.join("README.md"), "shipshape").expect("write readme");
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(&root)
-            .status()
-            .expect("git add");
-        Command::new("git")
-            .args([
-                "-c",
-                "user.name=ShipShape",
-                "-c",
-                "user.email=shipshape@example.com",
-                "commit",
-                "-m",
-                "init",
-            ])
-            .current_dir(&root)
-            .status()
-            .expect("git commit");
-        root
+        std::fs::create_dir_all(&root)?;
+        run_test_git(&root, &["init", "-q"])?;
+        let readme = root.join("README.md");
+        std::fs::write(&readme, "shipshape")?;
+        run_test_git(&root, &["add", "."])?;
+        let commit_args = [
+            "-c",
+            "user.name=ShipShape",
+            "-c",
+            "user.email=shipshape@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ];
+        run_test_git(&root, &commit_args)?;
+        Ok(root)
     }
 
+    /// Configurable mechanic stub for unit tests.
     struct TestMechanic {
+        /// Mechanic identifier.
         id: &'static str,
+        /// Preset `audit` result.
         audit_result: Result<Vec<Violation>, String>,
+        /// Preset `dry_run` result.
         dry_run_result: Result<String, String>,
+        /// Preset `apply` result.
         apply_result: Result<bool, String>,
     }
 
-    impl shipshape_core::Mechanic for TestMechanic {
+    impl Mechanic for TestMechanic {
         fn id(&self) -> &str {
             self.id
         }

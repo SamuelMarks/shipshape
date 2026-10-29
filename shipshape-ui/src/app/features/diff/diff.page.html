@@ -14,7 +14,7 @@
         <h2 id="diff-files-title" class="card-title">Changed files</h2>
         <span class="tag">{{ files().length }} selected</span>
       </div>
-      <div class="file-list" role="list">
+      <div class="file-list" role="group" aria-labelledby="diff-files-title">
         @for (file of files(); track file.path) {
         <button
           type="button"

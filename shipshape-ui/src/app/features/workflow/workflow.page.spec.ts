@@ -267,8 +267,11 @@ describe("WorkflowPage", () => {
     const { page, updateDiff } = setup();
 
     page.selectedFile.set(null);
-    page.updateModified("noop");
+    page.updateModified("ignored");
     expect(updateDiff).not.toHaveBeenCalled();
+
+    page.selectFile(mockDiffs.files[0]!);
+    expect(page.selectedFile()?.path).toBe(mockDiffs.files[0]!.path);
 
     page.runTools();
     flush();
@@ -285,7 +288,9 @@ describe("WorkflowPage", () => {
       modified: "updated content",
     });
 
-    page.selectFile(mockDiffs.files[1]);
+    page.selectFile(mockDiffs.files[1]!);
+    page.selectFile(target);
+    expect(page.selectedModified()).toBe("updated content");
   }));
 
   it("builds a file tree with mixed nodes and sorting", () => {
@@ -330,10 +335,21 @@ describe("WorkflowPage", () => {
       },
     ];
 
-    const tree = (page as any).buildFileTree(customFiles) as Array<{
-      label: string;
-      kind: string;
-    }>;
+    interface TestTreeNode {
+      name: string;
+      path: string;
+      children: Map<string, TestTreeNode>;
+      file?: DiffFile;
+    }
+
+    const internalPage = page as unknown as {
+      buildFileTree: (
+        files: DiffFile[],
+      ) => Array<{ label: string; kind: string }>;
+      compareTreeNodes: (a: TestTreeNode, b: TestTreeNode) => number;
+    };
+
+    const tree = internalPage.buildFileTree(customFiles);
 
     expect(
       tree.some((node) => node.kind === "dir" && node.label === "alpha"),
@@ -342,23 +358,28 @@ describe("WorkflowPage", () => {
       tree.some((node) => node.kind === "file" && node.label === "main.rs"),
     ).toBeTrue();
 
-    const compareTreeNodes = (page as any).compareTreeNodes as (
-      a: any,
-      b: any,
-    ) => number;
-    const fileNode = {
+    const compareTreeNodes = internalPage.compareTreeNodes.bind(page);
+    const fileNode: TestTreeNode = {
       name: "file.txt",
       path: "file.txt",
       children: new Map(),
       file: customFiles[0],
     };
-    const dirNode = {
+    const dirNode: TestTreeNode = {
       name: "dir",
       path: "dir",
       children: new Map([["file.txt", fileNode]]),
     };
-    const dirAlpha = { name: "alpha", path: "alpha", children: new Map() };
-    const dirBeta = { name: "beta", path: "beta", children: new Map() };
+    const dirAlpha: TestTreeNode = {
+      name: "alpha",
+      path: "alpha",
+      children: new Map(),
+    };
+    const dirBeta: TestTreeNode = {
+      name: "beta",
+      path: "beta",
+      children: new Map(),
+    };
 
     expect(compareTreeNodes(fileNode, dirNode)).toBe(1);
     expect(compareTreeNodes(dirNode, fileNode)).toBe(-1);

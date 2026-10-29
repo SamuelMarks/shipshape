@@ -3,7 +3,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from "@angular/common/http/testing";
-import { provideHttpClient } from "@angular/common/http";
+import { provideHttpClient, withXhr } from "@angular/common/http";
 
 import {
   AuthService,
@@ -34,7 +34,7 @@ function setup(initialToken: string | null = null) {
   const storage = new MemoryStorage(initialToken);
   TestBed.configureTestingModule({
     providers: [
-      provideHttpClient(),
+      provideHttpClient(withXhr()),
       provideHttpClientTesting(),
       { provide: API_BASE_URL, useValue: "http://api" },
       { provide: AUTH_STORAGE, useValue: storage },
@@ -52,7 +52,7 @@ describe("AuthService", () => {
     const { service, http } = setup();
     const promise = service.getLoginUrl();
 
-    const req = http.expectOne("http://api/auth/config");
+    const req = http.expectOne("http://api/api/auth/config");
     req.flush({
       clientId: "client",
       authorizeUrl: "https://github.com/login/oauth/authorize",
@@ -69,7 +69,7 @@ describe("AuthService", () => {
     const { service, http, storage } = setup();
     const promise = service.exchangeCode("code-1");
 
-    const req = http.expectOne("http://api/auth/github");
+    const req = http.expectOne("http://api/api/auth/github");
     expect(req.request.body.code).toBe("code-1");
     req.flush({
       token: "shipshape-token",
@@ -86,7 +86,7 @@ describe("AuthService", () => {
     const { service, http } = setup("shipshape-token");
     const promise = service.refreshSession();
 
-    const req = http.expectOne("http://api/auth/me");
+    const req = http.expectOne("http://api/api/auth/me");
     req.flush({ id: "1", login: "octo", githubId: "99" });
 
     const result = await promise;
@@ -98,7 +98,7 @@ describe("AuthService", () => {
     const { service, http } = setup();
     const result = await service.refreshSession();
 
-    http.expectNone("http://api/auth/me");
+    http.expectNone("http://api/api/auth/me");
     expect(result).toBeFalse();
   });
 
@@ -106,7 +106,7 @@ describe("AuthService", () => {
     const { service, http, storage } = setup("shipshape-token");
     const promise = service.refreshSession();
 
-    const req = http.expectOne("http://api/auth/me");
+    const req = http.expectOne("http://api/api/auth/me");
     req.flush("Unauthorized", { status: 401, statusText: "Unauthorized" });
 
     const result = await promise;
@@ -117,7 +117,7 @@ describe("AuthService", () => {
   it("short-circuits ensureSession when a user is set", async () => {
     const { service, http } = setup();
     const exchange = service.exchangeCode("code-2");
-    const exchangeReq = http.expectOne("http://api/auth/github");
+    const exchangeReq = http.expectOne("http://api/api/auth/github");
     exchangeReq.flush({
       token: "shipshape-token",
       user: { id: "1", login: "octo", githubId: "99" },
@@ -126,7 +126,7 @@ describe("AuthService", () => {
 
     const result = await service.ensureSession();
 
-    http.expectNone("http://api/auth/me");
+    http.expectNone("http://api/api/auth/me");
     expect(result).toBeTrue();
   });
 
@@ -134,7 +134,7 @@ describe("AuthService", () => {
     const { service, http } = setup("shipshape-token");
     const promise = service.ensureSession();
 
-    const req = http.expectOne("http://api/auth/me");
+    const req = http.expectOne("http://api/api/auth/me");
     req.flush({ id: "1", login: "octo", githubId: "99" });
 
     const result = await promise;
@@ -144,7 +144,7 @@ describe("AuthService", () => {
   it("signs out and clears storage", async () => {
     const { service, http, storage } = setup();
     const exchange = service.exchangeCode("code-3");
-    const exchangeReq = http.expectOne("http://api/auth/github");
+    const exchangeReq = http.expectOne("http://api/api/auth/github");
     exchangeReq.flush({
       token: "shipshape-token",
       user: { id: "1", login: "octo", githubId: "99" },
@@ -163,7 +163,7 @@ describe("AuthService", () => {
     expect(service.isAuthenticated()).toBeFalse();
 
     const exchange = service.exchangeCode("code-4");
-    const exchangeReq = http.expectOne("http://api/auth/github");
+    const exchangeReq = http.expectOne("http://api/api/auth/github");
     exchangeReq.flush({
       token: "shipshape-token",
       user: { id: "1", login: "octo", githubId: "99" },
@@ -185,7 +185,7 @@ describe("AuthService tokens", () => {
   it("uses the default storage factory", () => {
     TestBed.configureTestingModule({});
     const storage = TestBed.inject(AUTH_STORAGE);
-    expect(storage).toEqual(jasmine.any(LocalStorageAuthStorage));
+    expect(storage instanceof LocalStorageAuthStorage).toBeTrue();
   });
 
   it("reads and writes via localStorage when available", () => {

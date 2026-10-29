@@ -1,15 +1,34 @@
 //! CI configuration generation for ShipShape.
+//!
+//! Generates `Dockerfile` and `.gitlab-ci.yml` configurations tailored to the
+//! build markers detected in a repository via [`FileSystem`].
 
 use std::path::Path;
 
-/// Generate a Dockerfile and `.gitlab-ci.yml` configuration for a repository.
+use crate::fs::{FileSystem, StdFileSystem, has_python_packaging, is_notebook_path};
+
+/// Generate a `Dockerfile` and `.gitlab-ci.yml` configuration for a repository at `path`
+/// using [`StdFileSystem`].
 ///
-/// The generated output is based on build marker files found at the repository root.
+/// # Arguments
+/// * `path` - Repository root directory.
+#[must_use]
 pub fn generate_ci_config(path: &Path) -> (String, String) {
-    if detect_notebook_only(path) {
+    let fs = StdFileSystem::new();
+    generate_ci_config_with_fs(&fs, path)
+}
+
+/// Generate a `Dockerfile` and `.gitlab-ci.yml` configuration for a repository at `path`
+/// using the provided [`FileSystem`] adapter.
+///
+/// # Arguments
+/// * `fs` - Filesystem implementation used to inspect repository markers and files.
+/// * `path` - Repository root directory.
+pub fn generate_ci_config_with_fs<F: FileSystem + ?Sized>(fs: &F, path: &Path) -> (String, String) {
+    if detect_notebook_only(fs, path) {
         return (notebook_only_dockerfile(), notebook_only_ci());
     }
-    match detect_language(path) {
+    match detect_language(fs, path) {
         Some(Language::Python) => (python_dockerfile(), python_ci()),
         Some(Language::Node) => (node_dockerfile(), node_ci()),
         Some(Language::Rust) => (rust_dockerfile(), rust_ci()),
@@ -19,91 +38,79 @@ pub fn generate_ci_config(path: &Path) -> (String, String) {
     }
 }
 
+/// Primary build stack detected from repository root marker files.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Language {
+    /// Python project (`pyproject.toml`, `setup.py`, or `setup.cfg`).
     Python,
+    /// Node.js project (`package.json`).
     Node,
+    /// Rust project (`Cargo.toml`).
     Rust,
+    /// Go project (`go.mod`).
     Go,
+    /// C/C++ CMake project (`CMakeLists.txt`).
     CMake,
 }
 
-fn detect_language(path: &Path) -> Option<Language> {
-    if has_file(path, "pyproject.toml") || has_file(path, "setup.py") {
+/// Detect the primary language stack from build marker files at `path`.
+///
+/// # Arguments
+/// * `fs` - Filesystem implementation.
+/// * `path` - Repository root path.
+fn detect_language<F: FileSystem + ?Sized>(fs: &F, path: &Path) -> Option<Language> {
+    if has_python_packaging(fs, path) {
         return Some(Language::Python);
     }
-    if has_file(path, "package.json") {
+    if has_file(fs, path, "package.json") {
         return Some(Language::Node);
     }
-    if has_file(path, "Cargo.toml") {
+    if has_file(fs, path, "Cargo.toml") {
         return Some(Language::Rust);
     }
-    if has_file(path, "go.mod") {
+    if has_file(fs, path, "go.mod") {
         return Some(Language::Go);
     }
-    if has_file(path, "CMakeLists.txt") {
+    if has_file(fs, path, "CMakeLists.txt") {
         return Some(Language::CMake);
     }
     None
 }
 
-fn has_file(root: &Path, name: &str) -> bool {
-    root.join(name).is_file()
+/// Check whether `root` contains a regular file named `name`.
+///
+/// # Arguments
+/// * `fs` - Filesystem implementation.
+/// * `root` - Directory path.
+/// * `name` - File name relative to `root`.
+fn has_file<F: FileSystem + ?Sized>(fs: &F, root: &Path, name: &str) -> bool {
+    fs.is_file(&root.join(name))
 }
 
-fn detect_notebook_only(root: &Path) -> bool {
-    if has_python_packaging(root) {
+/// Determine whether `root` contains Jupyter notebooks without Python packaging metadata.
+///
+/// # Arguments
+/// * `fs` - Filesystem implementation.
+/// * `root` - Repository root path.
+fn detect_notebook_only<F: FileSystem + ?Sized>(fs: &F, root: &Path) -> bool {
+    if has_python_packaging(fs, root) {
         return false;
     }
-    contains_notebook(root)
+    contains_notebook(fs, root)
 }
 
-fn contains_notebook(root: &Path) -> bool {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if is_hidden(&path) {
-                continue;
-            }
-            let file_type = match entry.file_type() {
-                Ok(file_type) => file_type,
-                Err(_) => continue,
-            };
-            if file_type.is_dir() {
-                pending.push(path);
-            } else if file_type.is_file() && is_notebook(&path) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn is_hidden(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.starts_with('.'))
+/// Return `true` if any non-hidden file under `root` is a `.ipynb` notebook.
+///
+/// # Arguments
+/// * `fs` - Filesystem implementation.
+/// * `root` - Repository root path.
+fn contains_notebook<F: FileSystem + ?Sized>(fs: &F, root: &Path) -> bool {
+    fs.list_files(root)
+        .map(|files| files.iter().any(|path| is_notebook_path(path)))
         .unwrap_or(false)
 }
 
-fn is_notebook(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("ipynb"))
-        .unwrap_or(false)
-}
-
-fn has_python_packaging(root: &Path) -> bool {
-    ["pyproject.toml", "setup.py", "setup.cfg"]
-        .iter()
-        .any(|name| root.join(name).is_file())
-}
-
+/// Build the Python `Dockerfile` template.
 fn python_dockerfile() -> String {
     [
         "FROM python:3.11-slim",
@@ -111,12 +118,13 @@ fn python_dockerfile() -> String {
         "COPY . .",
         "RUN python -m pip install --upgrade pip",
         "RUN python -m pip install .[test]",
-        "CMD [\"pytest\", \"-q\"]",
+        r#"CMD ["pytest", "-q"]"#,
         "",
     ]
     .join("\n")
 }
 
+/// Build the Python `.gitlab-ci.yml` template.
 fn python_ci() -> String {
     [
         "stages:",
@@ -133,18 +141,20 @@ fn python_ci() -> String {
     .join("\n")
 }
 
+/// Build the Node.js `Dockerfile` template.
 fn node_dockerfile() -> String {
     [
         "FROM node:20-alpine",
         "WORKDIR /app",
         "COPY . .",
         "RUN npm ci",
-        "CMD [\"npm\", \"test\"]",
+        r#"CMD ["npm", "test"]"#,
         "",
     ]
     .join("\n")
 }
 
+/// Build the Node.js `.gitlab-ci.yml` template.
 fn node_ci() -> String {
     [
         "stages:",
@@ -160,18 +170,20 @@ fn node_ci() -> String {
     .join("\n")
 }
 
+/// Build the Rust `Dockerfile` template.
 fn rust_dockerfile() -> String {
     [
         "FROM rust:1.76",
         "WORKDIR /app",
         "COPY . .",
         "RUN cargo test --all",
-        "CMD [\"cargo\", \"test\", \"--all\"]",
+        r#"CMD ["cargo", "test", "--all"]"#,
         "",
     ]
     .join("\n")
 }
 
+/// Build the Rust `.gitlab-ci.yml` template.
 fn rust_ci() -> String {
     [
         "stages:",
@@ -186,18 +198,20 @@ fn rust_ci() -> String {
     .join("\n")
 }
 
+/// Build the Go `Dockerfile` template.
 fn go_dockerfile() -> String {
     [
         "FROM golang:1.21",
         "WORKDIR /app",
         "COPY . .",
         "RUN go test ./...",
-        "CMD [\"go\", \"test\", \"./...\"]",
+        r#"CMD ["go", "test", "./..."]"#,
         "",
     ]
     .join("\n")
 }
 
+/// Build the Go `.gitlab-ci.yml` template.
 fn go_ci() -> String {
     [
         "stages:",
@@ -212,6 +226,7 @@ fn go_ci() -> String {
     .join("\n")
 }
 
+/// Build the CMake `Dockerfile` template.
 fn cmake_dockerfile() -> String {
     [
         "FROM ubuntu:22.04",
@@ -225,6 +240,7 @@ fn cmake_dockerfile() -> String {
     .join("\n")
 }
 
+/// Build the CMake `.gitlab-ci.yml` template.
 fn cmake_ci() -> String {
     [
         "stages:",
@@ -242,17 +258,19 @@ fn cmake_ci() -> String {
     .join("\n")
 }
 
+/// Build the fail-fast `Dockerfile` template for notebook-only repositories.
 fn notebook_only_dockerfile() -> String {
     [
         "FROM ubuntu:22.04",
         "WORKDIR /app",
         "COPY . .",
-        "RUN /bin/sh -c \"echo 'Notebook-only repository detected; add packaging metadata.' && exit 1\"",
+        r#"RUN /bin/sh -c "echo 'Notebook-only repository detected; add packaging metadata.' && exit 1""#,
         "",
     ]
     .join("\n")
 }
 
+/// Build the fail-fast `.gitlab-ci.yml` template for notebook-only repositories.
 fn notebook_only_ci() -> String {
     [
         "stages:",
@@ -261,24 +279,26 @@ fn notebook_only_ci() -> String {
         "validate:",
         "  image: ubuntu:22.04",
         "  script:",
-        "    - echo \"Notebook-only repository detected; add packaging metadata.\"",
+        r#"    - echo "Notebook-only repository detected; add packaging metadata.""#,
         "    - exit 1",
         "",
     ]
     .join("\n")
 }
 
+/// Build the generic fallback `Dockerfile` template.
 fn generic_dockerfile() -> String {
     [
         "FROM ubuntu:22.04",
         "WORKDIR /app",
         "COPY . .",
-        "CMD [\"/bin/sh\", \"-c\", \"echo 'No build markers detected.'\"]",
+        r#"CMD ["/bin/sh", "-c", "echo 'No build markers detected.'"]"#,
         "",
     ]
     .join("\n")
 }
 
+/// Build the generic fallback `.gitlab-ci.yml` template.
 fn generic_ci() -> String {
     [
         "stages:",
@@ -287,7 +307,7 @@ fn generic_ci() -> String {
         "test:",
         "  image: ubuntu:22.04",
         "  script:",
-        "    - echo \"No build markers detected.\"",
+        r#"    - echo "No build markers detected.""#,
         "",
     ]
     .join("\n")
@@ -295,119 +315,130 @@ fn generic_ci() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::generate_ci_config;
+    use super::{generate_ci_config, generate_ci_config_with_fs};
+    use crate::error::{Result, ShipShapeError};
+    use crate::fs::MockFileSystem;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Counter for unique test directories.
     static UNIQUE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
-    fn detects_python_projects() {
-        let root = temp_dir_with_marker("pyproject.toml");
+    fn detects_python_projects() -> Result<()> {
+        let root = temp_dir_with_marker("pyproject.toml")?;
         let (dockerfile, ci) = generate_ci_config(&root);
 
         assert!(dockerfile.contains("python:3.11-slim"));
         assert!(ci.contains("pytest -q"));
 
-        cleanup_dir(&root);
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]
-    fn detects_node_projects() {
-        let root = temp_dir_with_marker("package.json");
+    fn detects_node_projects() -> Result<()> {
+        let root = temp_dir_with_marker("package.json")?;
         let (dockerfile, ci) = generate_ci_config(&root);
 
         assert!(dockerfile.contains("node:20-alpine"));
         assert!(ci.contains("npm test"));
 
-        cleanup_dir(&root);
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]
-    fn detects_rust_projects() {
-        let root = temp_dir_with_marker("Cargo.toml");
+    fn detects_rust_projects() -> Result<()> {
+        let root = temp_dir_with_marker("Cargo.toml")?;
         let (dockerfile, ci) = generate_ci_config(&root);
 
         assert!(dockerfile.contains("rust:1.76"));
         assert!(ci.contains("cargo test --all"));
 
-        cleanup_dir(&root);
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]
-    fn detects_go_projects() {
-        let root = temp_dir_with_marker("go.mod");
+    fn detects_go_projects() -> Result<()> {
+        let root = temp_dir_with_marker("go.mod")?;
         let (dockerfile, ci) = generate_ci_config(&root);
 
         assert!(dockerfile.contains("golang:1.21"));
         assert!(ci.contains("go test ./..."));
 
-        cleanup_dir(&root);
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]
-    fn detects_cmake_projects() {
-        let root = temp_dir_with_marker("CMakeLists.txt");
+    fn detects_cmake_projects() -> Result<()> {
+        let root = temp_dir_with_marker("CMakeLists.txt")?;
         let (dockerfile, ci) = generate_ci_config(&root);
 
         assert!(dockerfile.contains("cmake -S . -B build"));
         assert!(ci.contains("cmake --build build"));
 
-        cleanup_dir(&root);
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]
-    fn notebook_only_projects_fail_fast() {
-        let root = temp_dir_with_marker("analysis.ipynb");
+    fn notebook_only_projects_fail_fast() -> Result<()> {
+        let root = temp_dir_with_marker("analysis.ipynb")?;
         let (dockerfile, ci) = generate_ci_config(&root);
 
         assert!(dockerfile.contains("Notebook-only repository detected"));
         assert!(ci.contains("exit 1"));
 
-        cleanup_dir(&root);
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]
-    fn notebooks_with_packaging_use_python_config() {
-        let root = temp_dir_with_marker("analysis.ipynb");
-        std::fs::write(root.join("pyproject.toml"), "name = \"demo\"").expect("write pyproject");
+    fn notebooks_with_setup_cfg_use_python_config() -> Result<()> {
+        let root = temp_dir_with_marker("analysis.ipynb")?;
+        let setup_cfg = root.join("setup.cfg");
+        std::fs::write(&setup_cfg, "[metadata]\nname = demo\n")?;
         let (dockerfile, ci) = generate_ci_config(&root);
 
         assert!(dockerfile.contains("python:3.11-slim"));
         assert!(ci.contains("pytest -q"));
 
-        cleanup_dir(&root);
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]
-    fn falls_back_when_no_markers_found() {
-        let root = temp_dir_with_marker("README.md");
+    fn falls_back_when_no_markers_found_or_list_files_errors() -> Result<()> {
+        let root = temp_dir_with_marker("README.md")?;
         let (dockerfile, ci) = generate_ci_config(&root);
 
         assert!(dockerfile.contains("ubuntu:22.04"));
         assert!(ci.contains("No build markers detected"));
+        std::fs::remove_dir_all(&root)?;
 
-        cleanup_dir(&root);
+        let mut mock_fs = MockFileSystem::new();
+        mock_fs.expect_is_file().returning(|_| false);
+        mock_fs
+            .expect_list_files()
+            .returning(|_| Err(ShipShapeError::Other("io failure".to_string())));
+
+        let (dockerfile, ci) = generate_ci_config_with_fs(&mock_fs, Path::new("/missing"));
+        assert!(dockerfile.contains("No build markers detected"));
+        assert!(ci.contains("No build markers detected"));
+        Ok(())
     }
 
-    fn temp_dir_with_marker(marker: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(unique_dir_name());
-        std::fs::create_dir_all(&root).expect("create temp dir");
-        let path = root.join(marker);
-        std::fs::write(&path, "placeholder").expect("write marker");
-        root
-    }
-
-    fn unique_dir_name() -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
+    /// Create a temporary directory containing `marker`.
+    fn temp_dir_with_marker(marker: &str) -> Result<PathBuf> {
+        let pid = std::process::id();
         let counter = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        PathBuf::from(format!("shipshape_drydock_test_{nanos}_{counter}"))
-    }
-
-    fn cleanup_dir(root: &Path) {
-        std::fs::remove_dir_all(root).expect("cleanup temp dir");
+        let root = std::env::temp_dir().join(format!("shipshape_drydock_test_{pid}_{counter}"));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join(marker);
+        std::fs::write(&path, "placeholder")?;
+        Ok(root)
     }
 }

@@ -1,23 +1,34 @@
+/**
+ * @file Unit tests for {@link resolveLanguageExtension}.
+ */
+
 import { resolveLanguageExtension } from "./code-language";
 
 describe("resolveLanguageExtension", () => {
-  it("returns extensions for supported languages", () => {
-    expect(resolveLanguageExtension("typescript")).toBeTruthy();
-    expect(resolveLanguageExtension("ts")).toBeTruthy();
-    expect(resolveLanguageExtension("javascript")).toBeTruthy();
-    expect(resolveLanguageExtension("js")).toBeTruthy();
-    expect(resolveLanguageExtension("json")).toBeTruthy();
-    expect(resolveLanguageExtension("html")).toBeTruthy();
-    expect(resolveLanguageExtension("css")).toBeTruthy();
-    expect(resolveLanguageExtension("markdown")).toBeTruthy();
-    expect(resolveLanguageExtension("md")).toBeTruthy();
-    expect(resolveLanguageExtension("rust")).toBeTruthy();
-    expect(resolveLanguageExtension("yaml")).toBeTruthy();
-    expect(resolveLanguageExtension("yml")).toBeTruthy();
+  it("returns non-empty extensions for all supported languages", () => {
+    const supported = [
+      "ts",
+      "typescript",
+      "js",
+      "javascript",
+      "json",
+      "html",
+      "css",
+      "md",
+      "markdown",
+      "rust",
+      "yaml",
+      "yml",
+    ];
+    for (const lang of supported) {
+      const ext = resolveLanguageExtension(lang);
+      expect(Array.isArray(ext)).toBeFalse();
+    }
   });
 
-  it("returns a fallback for unknown languages", () => {
+  it("returns an empty array fallback for unknown languages", () => {
     const extension = resolveLanguageExtension("unknown");
     expect(Array.isArray(extension)).toBeTrue();
+    expect((extension as readonly unknown[]).length).toBe(0);
   });
 });

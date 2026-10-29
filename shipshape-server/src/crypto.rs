@@ -1,268 +1,301 @@
 //! Token encryption helpers for storing OAuth credentials at rest.
+//!
+//! Uses AES-256-GCM authenticated encryption (`ring::aead`) with key rotation
+//! support via primary and fallback keys loaded from `SHIPSHAPE_TOKEN_KEYS`
+//! or `SHIPSHAPE_TOKEN_KEY`.
+
+use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose};
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
-use std::sync::Arc;
 
-/// Environment variable holding base64-encoded token encryption keys.
-pub(crate) const TOKEN_KEY_ENV: &str = "SHIPSHAPE_TOKEN_KEYS";
+use crate::error::{ServerError, ServerResult};
 
+/// Ciphertext prefix identifying AES-256-GCM v1 encrypted tokens.
+const ENCRYPTED_PREFIX: &str = "enc:v1:";
+/// Required byte length for an AES-256-GCM key (256 bits).
 const KEY_LEN: usize = 32;
+/// Required byte length for a 96-bit GCM nonce.
 const NONCE_LEN: usize = 12;
-const TOKEN_PREFIX: &str = "enc:v1:";
+/// Environment variable holding comma-separated base64-encoded 32-byte keys.
+const TOKEN_KEYS_ENV: &str = "SHIPSHAPE_TOKEN_KEYS";
+/// Fallback environment variable holding a single base64-encoded 32-byte key.
+const TOKEN_KEY_ENV: &str = "SHIPSHAPE_TOKEN_KEY";
 
-/// Encrypts and decrypts OAuth tokens for storage in Postgres.
+/// Encrypts and decrypts OAuth tokens using AES-256-GCM.
 #[derive(Clone)]
-pub(crate) struct TokenCipher(Arc<TokenCipherInner>);
-
-impl std::fmt::Debug for TokenCipher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TokenCipher").finish_non_exhaustive()
-    }
+pub struct TokenCipher {
+    /// Shared primary and fallback AEAD keys.
+    inner: Arc<TokenCipherInner>,
 }
 
+/// Internal AEAD key ring holding the primary encryption key and rotation fallbacks.
 struct TokenCipherInner {
+    /// Primary key used for all new encryptions and tried first on decryption.
     primary: LessSafeKey,
-    #[allow(dead_code)]
+    /// Historical fallback keys tried in order when primary decryption fails.
     fallbacks: Vec<LessSafeKey>,
 }
 
+impl From<ring::error::Unspecified> for ServerError {
+    fn from(_: ring::error::Unspecified) -> Self {
+        Self::CryptoOperationFailed {
+            detail: "cryptographic operation failed".to_string(),
+        }
+    }
+}
+
 impl TokenCipher {
-    /// Build a cipher from `SHIPSHAPE_TOKEN_KEYS` (comma-separated base64 32-byte keys).
-    pub(crate) fn from_env() -> Result<Self, String> {
-        let raw = std::env::var(TOKEN_KEY_ENV)
-            .map_err(|_| format!("{TOKEN_KEY_ENV} must be set to base64-encoded 32-byte keys"))?;
-        Self::from_base64_keys(raw.split(',').map(str::trim))
+    /// Load token encryption keys from `SHIPSHAPE_TOKEN_KEYS` or `SHIPSHAPE_TOKEN_KEY`.
+    pub fn from_env() -> ServerResult<Self> {
+        let raw = match std::env::var(TOKEN_KEYS_ENV).or_else(|_| std::env::var(TOKEN_KEY_ENV)) {
+            Ok(v) => v,
+            Err(_) => {
+                let detail = format!("{TOKEN_KEYS_ENV} or {TOKEN_KEY_ENV} must be set");
+                return Err(ServerError::CryptoKeyInvalid { detail });
+            }
+        };
+        let keys: Vec<String> = raw
+            .split(',')
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+        Self::from_base64_keys(keys)
     }
 
-    /// Build a cipher from base64-encoded keys (primary first).
-    pub(crate) fn from_base64_keys<I, S>(keys: I) -> Result<Self, String>
+    /// Build a cipher from base64-encoded 32-byte keys (first is primary, rest are fallbacks).
+    ///
+    /// # Arguments
+    /// * `keys` - Iterable of base64-encoded 256-bit keys.
+    pub fn from_base64_keys<I, S>(keys: I) -> ServerResult<Self>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut decoded = Vec::new();
+        let raw_keys: Vec<String> = keys
+            .into_iter()
+            .map(|k| k.as_ref().trim().to_string())
+            .filter(|k| !k.is_empty())
+            .collect();
+        Self::from_trimmed_keys(&raw_keys)
+    }
+
+    /// Parse a slice of non-empty base64-encoded 32-byte keys into a [`TokenCipher`].
+    ///
+    /// # Arguments
+    /// * `keys` - Slice of trimmed base64 key strings.
+    fn from_trimmed_keys(keys: &[String]) -> ServerResult<Self> {
+        let mut parsed = Vec::with_capacity(keys.len());
         for key in keys {
-            let trimmed = key.as_ref().trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            decoded.push(parse_base64_key(trimmed)?);
+            parsed.push(parse_base64_key(key)?);
         }
-        if decoded.is_empty() {
-            return Err("no token encryption keys provided".to_string());
-        }
-        let mut iter = decoded.into_iter();
-        let primary = build_cipher(iter.next().expect("primary key"));
-        let fallbacks = iter.map(build_cipher).collect();
-        Ok(Self(Arc::new(TokenCipherInner { primary, fallbacks })))
+        build_cipher(parsed)
     }
 
-    /// Encrypt a token string for storage.
-    pub(crate) fn encrypt(&self, plaintext: &str) -> String {
+    /// Encrypt a plaintext token for storage, returning a prefixed base64 string.
+    ///
+    /// # Arguments
+    /// * `plaintext` - Raw secret token to encrypt.
+    pub fn encrypt(&self, plaintext: &str) -> ServerResult<String> {
+        let rng = SystemRandom::new();
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        SystemRandom::new()
-            .fill(&mut nonce_bytes)
-            .expect("nonce generation failed");
+        rng.fill(&mut nonce_bytes)?;
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        let mut in_out = plaintext.as_bytes().to_vec();
-        self.0
+        let mut buffer = plaintext.as_bytes().to_vec();
+        self.inner
             .primary
-            .seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
-            .expect("token encryption failed");
-        let mut payload = Vec::with_capacity(NONCE_LEN + in_out.len());
-        payload.extend_from_slice(&nonce_bytes);
-        payload.extend_from_slice(&in_out);
-        let encoded = general_purpose::STANDARD.encode(payload);
-        format!("{TOKEN_PREFIX}{encoded}")
+            .seal_in_place_append_tag(nonce, Aad::empty(), &mut buffer)?;
+        let mut combined = Vec::with_capacity(NONCE_LEN + buffer.len());
+        combined.extend_from_slice(&nonce_bytes);
+        combined.extend_from_slice(&buffer);
+        let encoded = general_purpose::STANDARD.encode(combined);
+        Ok(format!("{ENCRYPTED_PREFIX}{encoded}"))
     }
 
-    /// Decrypt a stored token, passing through legacy plaintext values.
-    #[allow(dead_code)]
-    pub(crate) fn decrypt(&self, stored: &str) -> Result<String, String> {
-        let Some(encoded) = stored.strip_prefix(TOKEN_PREFIX) else {
-            return Ok(stored.to_string());
+    /// Decrypt a stored token, trying the primary key and then any configured fallback keys.
+    ///
+    /// # Arguments
+    /// * `stored` - Prefixed base64 ciphertext string (`"enc:v1:..."`).
+    pub fn decrypt(&self, stored: &str) -> ServerResult<String> {
+        let Some(encoded) = stored.strip_prefix(ENCRYPTED_PREFIX) else {
+            return Err(ServerError::CryptoOperationFailed {
+                detail: "stored token missing encryption prefix".to_string(),
+            });
         };
-        let payload = general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|err| format!("token payload base64 decode failed: {err}"))?;
-        if payload.len() <= NONCE_LEN {
-            return Err("token payload missing nonce".to_string());
+        let raw = general_purpose::STANDARD.decode(encoded)?;
+        if raw.len() <= NONCE_LEN {
+            return Err(ServerError::CryptoOperationFailed {
+                detail: "encrypted token payload is too short".to_string(),
+            });
         }
-        let (nonce_bytes, ciphertext) = payload.split_at(NONCE_LEN);
-        if let Ok(plaintext) = decrypt_with_key(&self.0.primary, nonce_bytes, ciphertext) {
-            return Ok(plaintext);
-        }
-        for cipher in &self.0.fallbacks {
-            if let Ok(plaintext) = decrypt_with_key(cipher, nonce_bytes, ciphertext) {
+        let (nonce_bytes, ciphertext) = raw.split_at(NONCE_LEN);
+        let mut nonce_arr = [0u8; NONCE_LEN];
+        nonce_arr.copy_from_slice(nonce_bytes);
+
+        let keys = std::iter::once(&self.inner.primary).chain(self.inner.fallbacks.iter());
+        for key in keys {
+            if let Ok(plaintext) = decrypt_with_key(key, nonce_arr, ciphertext) {
                 return Ok(plaintext);
             }
         }
-        Err("token decryption failed".to_string())
+        Err(ServerError::CryptoOperationFailed {
+            detail: "unable to decrypt token with configured keys".to_string(),
+        })
     }
 
-    /// Return true when the stored token includes the encryption prefix.
-    #[allow(dead_code)]
-    pub(crate) fn is_encrypted(stored: &str) -> bool {
-        stored.starts_with(TOKEN_PREFIX)
+    /// Check whether a stored value carries the `"enc:v1:"` encrypted prefix.
+    ///
+    /// # Arguments
+    /// * `value` - Stored token string to inspect.
+    #[must_use]
+    pub fn is_encrypted(value: &str) -> bool {
+        value.starts_with(ENCRYPTED_PREFIX)
     }
 }
 
-fn parse_base64_key(key: &str) -> Result<[u8; KEY_LEN], String> {
-    let bytes = general_purpose::STANDARD
-        .decode(key)
-        .map_err(|err| format!("token key base64 decode failed: {err}"))?;
-    if bytes.len() != KEY_LEN {
-        return Err(format!(
-            "token key must be {KEY_LEN} bytes, got {}",
-            bytes.len()
-        ));
+/// Decode and validate a single base64-encoded 32-byte key.
+///
+/// # Arguments
+/// * `encoded` - Base64 string representing 32 raw bytes.
+fn parse_base64_key(encoded: &str) -> ServerResult<[u8; KEY_LEN]> {
+    let decoded = general_purpose::STANDARD.decode(encoded.trim())?;
+    let invalid_err = ServerError::CryptoKeyInvalid {
+        detail: format!("token key must decode to {KEY_LEN} bytes"),
+    };
+    <[u8; KEY_LEN]>::try_from(decoded.as_slice())
+        .ok()
+        .ok_or(invalid_err)
+}
+
+/// Construct a [`TokenCipher`] from a list of validated 32-byte raw keys.
+///
+/// # Arguments
+/// * `keys` - Non-empty vector of 32-byte AES-256 keys.
+fn build_cipher(keys: Vec<[u8; KEY_LEN]>) -> ServerResult<TokenCipher> {
+    let mut iter = keys.into_iter();
+    let missing_err = ServerError::CryptoKeyInvalid {
+        detail: "at least one token encryption key is required".to_string(),
+    };
+    let primary_raw = iter.next().ok_or(missing_err)?;
+    let primary = make_less_safe_key(&primary_raw)?;
+    let mut fallbacks = Vec::new();
+    for raw in iter {
+        fallbacks.push(make_less_safe_key(&raw)?);
     }
-    let mut out = [0u8; KEY_LEN];
-    out.copy_from_slice(&bytes);
-    Ok(out)
+    Ok(TokenCipher {
+        inner: Arc::new(TokenCipherInner { primary, fallbacks }),
+    })
 }
 
-fn build_cipher(key: [u8; KEY_LEN]) -> LessSafeKey {
-    let unbound = UnboundKey::new(&AES_256_GCM, &key).expect("token key length invalid");
-    LessSafeKey::new(unbound)
+/// Create a [`LessSafeKey`] from a 32-byte AES-256 key slice.
+///
+/// # Arguments
+/// * `raw` - 32-byte key array.
+fn make_less_safe_key(raw: &[u8; KEY_LEN]) -> ServerResult<LessSafeKey> {
+    let unbound = UnboundKey::new(&AES_256_GCM, raw)?;
+    Ok(LessSafeKey::new(unbound))
 }
 
-#[allow(dead_code)]
+/// Attempt to open `ciphertext` in-place using `key` and `nonce_bytes`.
+///
+/// # Arguments
+/// * `key` - Candidate AEAD key.
+/// * `nonce_bytes` - 12-byte GCM nonce.
+/// * `ciphertext` - Ciphertext with authentication tag appended.
 fn decrypt_with_key(
     key: &LessSafeKey,
-    nonce_bytes: &[u8],
+    nonce_bytes: [u8; NONCE_LEN],
     ciphertext: &[u8],
-) -> Result<String, String> {
-    let mut nonce_array = [0u8; NONCE_LEN];
-    nonce_array.copy_from_slice(nonce_bytes);
-    let nonce = Nonce::assume_unique_for_key(nonce_array);
-    let mut in_out = ciphertext.to_vec();
-    let plaintext = key
-        .open_in_place(nonce, Aad::empty(), &mut in_out)
-        .map_err(|_| "token decryption failed".to_string())?;
-    Ok(String::from_utf8_lossy(plaintext).to_string())
+) -> ServerResult<String> {
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    let mut buffer = ciphertext.to_vec();
+    let decrypted = key.open_in_place(nonce, Aad::empty(), &mut buffer)?;
+    Ok(String::from_utf8(decrypted.to_vec())?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const KEY_PRIMARY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-    const KEY_FALLBACK: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
-    const KEY_SHORT: &str = "AAAAAAAAAAAAAAAAAAAAAA==";
+    /// Primary 32-byte test key (all `0x00`).
+    const KEY_ONE: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    /// Secondary 32-byte test key (all `0x01`).
+    const KEY_TWO: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 
-    fn cipher() -> TokenCipher {
-        TokenCipher::from_base64_keys([KEY_PRIMARY]).expect("cipher")
+    #[test]
+    fn encrypt_roundtrip_and_fallback_key_rotation() -> ServerResult<()> {
+        let primary_only = TokenCipher::from_base64_keys([KEY_ONE])?;
+        let token = primary_only.encrypt("secret-token")?;
+        assert!(TokenCipher::is_encrypted(&token));
+        assert!(!TokenCipher::is_encrypted("plain-token"));
+        assert_eq!(primary_only.decrypt(&token)?, "secret-token");
+
+        let rotated = TokenCipher::from_base64_keys([KEY_TWO, KEY_ONE])?;
+        assert_eq!(rotated.decrypt(&token)?, "secret-token");
+
+        let wrong = TokenCipher::from_base64_keys([KEY_TWO])?;
+        assert!(wrong.decrypt(&token).is_err());
+        Ok(())
     }
 
     #[test]
-    fn from_base64_keys_rejects_empty() {
-        let err = TokenCipher::from_base64_keys(["   "]).unwrap_err();
-        assert!(err.contains("no token encryption keys"));
+    fn decrypt_rejects_unprefixed_short_and_corrupted_payloads() -> ServerResult<()> {
+        let cipher = TokenCipher::from_base64_keys([KEY_ONE])?;
+        assert!(cipher.decrypt("plain-token").is_err());
+
+        let short_payload = format!(
+            "{ENCRYPTED_PREFIX}{}",
+            general_purpose::STANDARD.encode([1u8, 2, 3])
+        );
+        assert!(cipher.decrypt(&short_payload).is_err());
+        Ok(())
     }
 
     #[test]
-    fn from_base64_keys_rejects_short_key() {
-        let err = TokenCipher::from_base64_keys([KEY_SHORT]).unwrap_err();
-        assert!(err.contains("token key must be"));
+    fn rejects_empty_and_invalid_keys() {
+        assert!(TokenCipher::from_base64_keys(["", "   "]).is_err());
+        assert!(TokenCipher::from_base64_keys(["not-base64!"]).is_err());
+        assert!(TokenCipher::from_base64_keys(["short"]).is_err());
+    }
+
+    /// Restore or remove an environment variable in tests.
+    fn restore_var(key: &str, prev: Option<String>) {
+        if let Some(v) = prev {
+            unsafe { std::env::set_var(key, v) };
+        } else {
+            unsafe { std::env::remove_var(key) };
+        }
     }
 
     #[test]
-    fn from_env_requires_keys() {
-        let guard = env_lock();
-        let previous = std::env::var(TOKEN_KEY_ENV).ok();
+    fn loads_keys_from_env_and_reports_missing() -> ServerResult<()> {
+        let _guard = crate::db::db_env_lock()?;
+        let prev_keys = std::env::var(TOKEN_KEYS_ENV).ok();
+        let prev_key = std::env::var(TOKEN_KEY_ENV).ok();
+
         unsafe {
+            std::env::remove_var(TOKEN_KEYS_ENV);
             std::env::remove_var(TOKEN_KEY_ENV);
         }
-        let err = TokenCipher::from_env().unwrap_err();
-        assert!(err.contains("SHIPSHAPE_TOKEN_KEYS"));
-        restore_env(previous);
-        drop(guard);
-    }
+        assert!(TokenCipher::from_env().is_err());
 
-    #[test]
-    fn encrypt_decrypt_roundtrip() {
-        let cipher = cipher();
-        let token = cipher.encrypt("secret-token");
-        assert!(TokenCipher::is_encrypted(&token));
-        let decrypted = cipher.decrypt(&token).expect("decrypt");
-        assert_eq!(decrypted, "secret-token");
-    }
-
-    #[test]
-    fn decrypt_passes_through_plaintext() {
-        let cipher = cipher();
-        let decrypted = cipher.decrypt("plain-token").expect("decrypt");
-        assert_eq!(decrypted, "plain-token");
-    }
-
-    #[test]
-    fn decrypt_uses_fallback_keys() {
-        let fallback = TokenCipher::from_base64_keys([KEY_FALLBACK]).expect("fallback");
-        let encrypted = fallback.encrypt("rotated-token");
-        let multi = TokenCipher::from_base64_keys([KEY_PRIMARY, KEY_FALLBACK]).expect("multi");
-        let decrypted = multi.decrypt(&encrypted).expect("decrypt");
-        assert_eq!(decrypted, "rotated-token");
-    }
-
-    #[test]
-    fn decrypt_rejects_bad_payload() {
-        let cipher = cipher();
-        let err = cipher.decrypt("enc:v1:bad*base64").unwrap_err();
-        assert!(err.contains("base64"));
-    }
-
-    #[test]
-    fn decrypt_rejects_short_payload() {
-        let cipher = cipher();
-        let err = cipher.decrypt("enc:v1:AA==").unwrap_err();
-        assert!(err.contains("nonce"));
-    }
-
-    #[test]
-    fn decrypt_rejects_wrong_key() {
-        let primary = TokenCipher::from_base64_keys([KEY_PRIMARY]).expect("primary");
-        let other = TokenCipher::from_base64_keys([KEY_FALLBACK]).expect("other");
-        let encrypted = other.encrypt("secret");
-        let err = primary.decrypt(&encrypted).unwrap_err();
-        assert!(err.contains("decryption failed"));
-    }
-
-    #[test]
-    fn from_env_parses_keys() {
-        let guard = env_lock();
-        let previous = std::env::var(TOKEN_KEY_ENV).ok();
         unsafe {
-            std::env::set_var(TOKEN_KEY_ENV, format!("{KEY_PRIMARY},{KEY_FALLBACK}"));
+            std::env::set_var(TOKEN_KEY_ENV, KEY_ONE);
         }
-        let cipher = TokenCipher::from_env().expect("env cipher");
-        let token = cipher.encrypt("env-token");
-        let decrypted = cipher.decrypt(&token).expect("decrypt");
-        assert_eq!(decrypted, "env-token");
-        restore_env(previous);
-        drop(guard);
-    }
+        let cipher = TokenCipher::from_env()?;
+        let encrypted = cipher.encrypt("env-token")?;
+        assert_eq!(cipher.decrypt(&encrypted)?, "env-token");
 
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::{Mutex, OnceLock};
-
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock")
-    }
-
-    fn restore_env(previous: Option<String>) {
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var(TOKEN_KEY_ENV, value);
-            },
-            None => unsafe {
-                std::env::remove_var(TOKEN_KEY_ENV);
-            },
+        unsafe {
+            std::env::set_var(TOKEN_KEYS_ENV, KEY_ONE);
         }
+        let _cipher_multi = TokenCipher::from_env()?;
+
+        restore_var(TOKEN_KEYS_ENV, prev_keys);
+        restore_var(TOKEN_KEY_ENV, prev_key);
+        restore_var(TOKEN_KEYS_ENV, Some(KEY_ONE.to_string()));
+        restore_var(TOKEN_KEYS_ENV, None);
+        Ok(())
     }
 }

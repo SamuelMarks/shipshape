@@ -1,12 +1,15 @@
 //! PR template interpolation for ShipShape placeholders.
+//!
+//! Locates `PULL_REQUEST_TEMPLATE.md` files via [`FileSystem`], validates placeholder
+//! presence, and interpolates [`PrTemplateContext`] metrics derived from [`FleetReport`].
+
+use std::path::{Path, PathBuf};
 
 use crate::ShipShapeError;
 use crate::domain::{FleetReport, LanguageDistribution};
 use crate::error::Result;
-use crate::fs::FileSystem;
+use crate::fs::{FileSystem, StdFileSystem};
 use crate::report::format_language_stats;
-use std::fmt::Write;
-use std::path::{Path, PathBuf};
 
 /// Placeholder token for ShipShape statistics.
 pub const SHIPSHAPE_STATS: &str = "{{SHIPSHAPE_STATS}}";
@@ -28,6 +31,10 @@ pub struct PrTemplateContext {
 
 impl PrTemplateContext {
     /// Build a template context from a ShipShape fleet report.
+    ///
+    /// # Arguments
+    /// * `report` - Fleet health and coverage report.
+    #[must_use]
     pub fn from_report(report: &FleetReport) -> Self {
         Self {
             stats: format_stats(report),
@@ -38,13 +45,17 @@ impl PrTemplateContext {
 }
 
 /// Attempt to locate and interpolate a PR template for the given repository root.
-pub fn interpolate_pr_template<F: FileSystem>(
+///
+/// # Arguments
+/// * `fs` - Filesystem implementation used to locate and read the template.
+/// * `repo_root` - Repository root directory.
+/// * `context` - Replacement values for `{{SHIPSHAPE_*}}` placeholders.
+pub fn interpolate_pr_template<F: FileSystem + ?Sized>(
     fs: &F,
     repo_root: &Path,
     context: &PrTemplateContext,
 ) -> Result<Option<String>> {
-    let template_path = find_pr_template(repo_root);
-    let Some(template_path) = template_path else {
+    let Some(template_path) = find_pr_template_with_fs(fs, repo_root) else {
         return Ok(None);
     };
 
@@ -53,78 +64,124 @@ pub fn interpolate_pr_template<F: FileSystem>(
     Ok(Some(rendered))
 }
 
-/// Locate a PR template in the repository, if it exists.
+/// Locate a PR template in the repository using [`StdFileSystem`], if it exists.
+///
+/// # Arguments
+/// * `repo_root` - Repository root directory.
+#[must_use]
 pub fn find_pr_template(repo_root: &Path) -> Option<PathBuf> {
+    let fs = StdFileSystem::new();
+    find_pr_template_with_fs(&fs, repo_root)
+}
+
+/// Locate a PR template in the repository using the provided [`FileSystem`], if it exists.
+///
+/// Checks `PULL_REQUEST_TEMPLATE.md` at the root first, then `.github/PULL_REQUEST_TEMPLATE.md`.
+///
+/// # Arguments
+/// * `fs` - Filesystem implementation.
+/// * `repo_root` - Repository root directory.
+pub fn find_pr_template_with_fs<F: FileSystem + ?Sized>(
+    fs: &F,
+    repo_root: &Path,
+) -> Option<PathBuf> {
     let candidates = [
         repo_root.join("PULL_REQUEST_TEMPLATE.md"),
         repo_root.join(".github").join("PULL_REQUEST_TEMPLATE.md"),
     ];
-    candidates.into_iter().find(|path| path.is_file())
+    candidates.into_iter().find(|path| fs.is_file(path))
 }
 
+/// Format the statistics block for `{{SHIPSHAPE_STATS}}`.
+///
+/// # Arguments
+/// * `report` - Fleet report containing health, coverage, and language stats.
 fn format_stats(report: &FleetReport) -> String {
-    let mut output = String::new();
     let coverage = &report.coverage;
-    let _ = writeln!(output, "ShipShape stats:");
-    let _ = writeln!(output, "- Health score: {}/100", report.health_score);
-    let _ = writeln!(
-        output,
-        "- Test coverage: {:.1}% ({}/{})",
-        coverage.test_coverage * 100.0,
-        coverage.test_files,
-        coverage.code_files
-    );
-    let _ = writeln!(
-        output,
-        "- Doc coverage: {:.1}% ({}/{})",
-        coverage.doc_coverage * 100.0,
-        coverage.doc_files,
-        coverage.code_files
-    );
     let languages = format_languages(&report.language_stats);
-    let _ = writeln!(output, "- Languages: {languages}");
-    output.trim_end().to_string()
+    [
+        "ShipShape stats:".to_string(),
+        format!("- Health score: {}/100", report.health_score),
+        format!(
+            "- Test coverage: {:.1}% ({}/{})",
+            coverage.test_coverage * 100.0,
+            coverage.test_files,
+            coverage.code_files
+        ),
+        format!(
+            "- Doc coverage: {:.1}% ({}/{})",
+            coverage.doc_coverage * 100.0,
+            coverage.doc_files,
+            coverage.code_files
+        ),
+        format!("- Languages: {languages}"),
+    ]
+    .join(
+        "
+",
+    )
 }
 
+/// Format the violations summary for `{{SHIPSHAPE_FIXES}}`.
+///
+/// # Arguments
+/// * `report` - Fleet report containing audit violations.
 fn format_fixes(report: &FleetReport) -> String {
     if report.violations.is_empty() {
         return "No violations detected.".to_string();
     }
-    let mut output = String::new();
-    let _ = writeln!(output, "Violations:");
+    let mut lines = Vec::with_capacity(report.violations.len() + 1);
+    lines.push("Violations:".to_string());
     for violation in &report.violations {
-        let _ = writeln!(output, "- {} ({})", violation.message, violation.id);
+        lines.push(format!("- {} ({})", violation.message, violation.id));
     }
-    output.trim_end().to_string()
+    lines.join(
+        "
+",
+    )
 }
 
+/// Format the coverage gate summary for `{{SHIPSHAPE_CI}}`.
+///
+/// # Arguments
+/// * `report` - Fleet report containing coverage gate statuses.
 fn format_ci(report: &FleetReport) -> String {
     let coverage = &report.coverage;
-    let mut output = String::new();
-    let _ = writeln!(output, "Coverage gates:");
-    let _ = writeln!(
-        output,
-        "- Tests: {} ({:.1}%, {}/{})",
-        coverage_status(coverage.low_test_coverage),
-        coverage.test_coverage * 100.0,
-        coverage.test_files,
-        coverage.code_files
-    );
-    let _ = writeln!(
-        output,
-        "- Docs: {} ({:.1}%, {}/{})",
-        coverage_status(coverage.low_doc_coverage),
-        coverage.doc_coverage * 100.0,
-        coverage.doc_files,
-        coverage.code_files
-    );
-    output.trim_end().to_string()
+    [
+        "Coverage gates:".to_string(),
+        format!(
+            "- Tests: {} ({:.1}%, {}/{})",
+            coverage_status(coverage.low_test_coverage),
+            coverage.test_coverage * 100.0,
+            coverage.test_files,
+            coverage.code_files
+        ),
+        format!(
+            "- Docs: {} ({:.1}%, {}/{})",
+            coverage_status(coverage.low_doc_coverage),
+            coverage.doc_coverage * 100.0,
+            coverage.doc_files,
+            coverage.code_files
+        ),
+    ]
+    .join(
+        "
+",
+    )
 }
 
-fn coverage_status(low: bool) -> &'static str {
+/// Return `"low"` when `low` is `true`, otherwise `"ok"`.
+///
+/// # Arguments
+/// * `low` - Flag indicating whether coverage is below the threshold.
+const fn coverage_status(low: bool) -> &'static str {
     if low { "low" } else { "ok" }
 }
 
+/// Format language distribution map as a comma-separated list sorted by percentage.
+///
+/// # Arguments
+/// * `stats` - Language distribution map.
 fn format_languages(stats: &LanguageDistribution) -> String {
     if stats.is_empty() {
         return "No languages detected.".to_string();
@@ -136,6 +193,11 @@ fn format_languages(stats: &LanguageDistribution) -> String {
         .join(", ")
 }
 
+/// Replace `{{SHIPSHAPE_*}}` placeholders in `template` with values from `context`.
+///
+/// # Arguments
+/// * `template` - Raw PR template string.
+/// * `context` - Replacement strings.
 fn apply_context(mut template: String, context: &PrTemplateContext) -> String {
     if template.contains(SHIPSHAPE_STATS) {
         template = template.replace(SHIPSHAPE_STATS, context.stats.trim());
@@ -149,19 +211,19 @@ fn apply_context(mut template: String, context: &PrTemplateContext) -> String {
     template
 }
 
-/// Helper to ensure placeholders are present in a template, returning an error if not.
+/// Ensure all required ShipShape placeholders are present in `template`.
+///
+/// # Arguments
+/// * `template` - Template content to validate.
 pub fn ensure_placeholders(template: &str) -> Result<()> {
-    let missing: Vec<&str> = [SHIPSHAPE_STATS, SHIPSHAPE_FIXES, SHIPSHAPE_CI]
+    let missing: Vec<&'static str> = [SHIPSHAPE_STATS, SHIPSHAPE_FIXES, SHIPSHAPE_CI]
         .into_iter()
         .filter(|token| !template.contains(*token))
         .collect();
     if missing.is_empty() {
         Ok(())
     } else {
-        Err(ShipShapeError::Other(format!(
-            "missing placeholders: {}",
-            missing.join(", ")
-        )))
+        Err(ShipShapeError::MissingPrPlaceholders { missing })
     }
 }
 
@@ -172,10 +234,19 @@ mod tests {
     use crate::{CoverageReport, FleetReport, Violation};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Counter for unique test directories.
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
-    fn interpolate_replaces_all_placeholders() {
-        let template = format!("{SHIPSHAPE_STATS}\n{SHIPSHAPE_FIXES}\n{SHIPSHAPE_CI}\n");
+    fn interpolate_replaces_all_placeholders_and_handles_no_placeholders() {
+        let template = format!(
+            "{SHIPSHAPE_STATS}
+{SHIPSHAPE_FIXES}
+{SHIPSHAPE_CI}
+"
+        );
         let context = PrTemplateContext {
             stats: "stats".to_string(),
             fixes: "fixes".to_string(),
@@ -183,34 +254,63 @@ mod tests {
         };
 
         let rendered = apply_context(template, &context);
-
         assert!(rendered.contains("stats"));
         assert!(rendered.contains("fixes"));
         assert!(rendered.contains("ci"));
+
+        let plain = apply_context("plain text".to_string(), &context);
+        assert_eq!(plain, "plain text");
     }
 
     #[test]
-    fn ensure_placeholders_reports_missing() {
+    fn ensure_placeholders_accepts_complete_and_reports_missing() -> Result<()> {
+        let complete = format!("{SHIPSHAPE_STATS} {SHIPSHAPE_FIXES} {SHIPSHAPE_CI}");
+        ensure_placeholders(&complete)?;
+
         let result = ensure_placeholders("{{SHIPSHAPE_STATS}}");
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(ShipShapeError::MissingPrPlaceholders { ref missing })
+            if missing == &[SHIPSHAPE_FIXES, SHIPSHAPE_CI]
+        ));
+        Ok(())
     }
 
     #[test]
-    fn find_pr_template_prefers_repo_root() {
-        let root = temp_dir_with_template("PULL_REQUEST_TEMPLATE.md");
-        let found = find_pr_template(&root).expect("template found");
-        assert_eq!(found, root.join("PULL_REQUEST_TEMPLATE.md"));
-        cleanup_dir(&root);
-    }
-
-    #[test]
-    fn interpolate_reads_and_renders_template() {
-        let root = temp_dir_with_template(".github/PULL_REQUEST_TEMPLATE.md");
-        let template_path = root.join(".github").join("PULL_REQUEST_TEMPLATE.md");
+    fn find_pr_template_prefers_repo_root_and_returns_none_when_absent() -> Result<()> {
+        let root = temp_dir_with_template("PULL_REQUEST_TEMPLATE.md")?;
+        let found = find_pr_template(&root);
+        assert_eq!(found, Some(root.join("PULL_REQUEST_TEMPLATE.md")));
+        std::fs::remove_dir_all(&root)?;
 
         let mut fs = MockFileSystem::new();
+        fs.expect_is_file().returning(|_| false);
+        let context = PrTemplateContext {
+            stats: "stats".to_string(),
+            fixes: "fixes".to_string(),
+            ci: "ci".to_string(),
+        };
+        let rendered = interpolate_pr_template(&fs, Path::new("/empty"), &context)?;
+        assert_eq!(rendered, None);
+        Ok(())
+    }
+
+    #[test]
+    fn interpolate_reads_and_renders_template() -> Result<()> {
+        let root = PathBuf::from("/repo");
+        let root_candidate = root.join("PULL_REQUEST_TEMPLATE.md");
+        let github_candidate = root.join(".github").join("PULL_REQUEST_TEMPLATE.md");
+
+        let mut fs = MockFileSystem::new();
+        fs.expect_is_file()
+            .withf(move |path| path == root_candidate)
+            .returning(|_| false);
+        let expected_read = github_candidate.clone();
+        fs.expect_is_file()
+            .withf(move |path| path == github_candidate)
+            .returning(|_| true);
         fs.expect_read_to_string()
-            .withf(move |path| path == template_path)
+            .withf(move |path| path == expected_read)
             .returning(|_| Ok("{{SHIPSHAPE_STATS}}".to_string()));
 
         let context = PrTemplateContext {
@@ -219,13 +319,9 @@ mod tests {
             ci: "ci".to_string(),
         };
 
-        let rendered = interpolate_pr_template(&fs, &root, &context)
-            .expect("rendered")
-            .expect("template present");
-
-        assert_eq!(rendered, "stats");
-
-        cleanup_dir(&root);
+        let rendered = interpolate_pr_template(&fs, &root, &context)?;
+        assert_eq!(rendered, Some("stats".to_string()));
+        Ok(())
     }
 
     #[test]
@@ -289,25 +385,13 @@ mod tests {
         assert!(context.ci.contains("Docs: low"));
     }
 
-    fn temp_dir_with_template(rel_path: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(unique_dir_name());
+    /// Create a temporary directory containing a template at `rel_path`.
+    fn temp_dir_with_template(rel_path: &str) -> Result<PathBuf> {
+        let pid = std::process::id();
+        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("shipshape_pr_template_test_{pid}_{count}"));
         let template_path = root.join(rel_path);
-        if let Some(parent) = template_path.parent() {
-            std::fs::create_dir_all(parent).expect("create template dir");
-        }
-        std::fs::write(&template_path, "placeholder").expect("write template");
-        root
-    }
-
-    fn unique_dir_name() -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        PathBuf::from(format!("shipshape_pr_template_test_{nanos}"))
-    }
-
-    fn cleanup_dir(root: &PathBuf) {
-        std::fs::remove_dir_all(root).expect("cleanup temp dir");
+        StdFileSystem::new().write_file(&template_path, "placeholder")?;
+        Ok(root)
     }
 }

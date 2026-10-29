@@ -3,6 +3,7 @@ import {
   HttpClient,
   provideHttpClient,
   withInterceptors,
+  withXhr
 } from "@angular/common/http";
 import {
   HttpTestingController,
@@ -21,7 +22,7 @@ describe("authInterceptor", () => {
 
     TestBed.configureTestingModule({
       providers: [
-        provideHttpClient(withInterceptors([authInterceptor])),
+        provideHttpClient(withXhr(), withInterceptors([authInterceptor])),
         provideHttpClientTesting(),
         { provide: AuthService, useValue: authStub },
       ],
@@ -31,7 +32,7 @@ describe("authInterceptor", () => {
     const controller = TestBed.inject(HttpTestingController);
 
     http.get("/api/dashboard").subscribe();
-    const req = controller.expectOne("/dashboard");
+    const req = controller.expectOne("/api/dashboard");
 
     expect(req.request.headers.get("Authorization")).toBe(
       "Bearer shipshape-token",
@@ -46,7 +47,7 @@ describe("authInterceptor", () => {
 
     TestBed.configureTestingModule({
       providers: [
-        provideHttpClient(withInterceptors([authInterceptor])),
+        provideHttpClient(withXhr(), withInterceptors([authInterceptor])),
         provideHttpClientTesting(),
         { provide: AuthService, useValue: authStub },
       ],
@@ -56,7 +57,7 @@ describe("authInterceptor", () => {
     const controller = TestBed.inject(HttpTestingController);
 
     http.get("/api/auth/config").subscribe();
-    const req = controller.expectOne("/auth/config");
+    const req = controller.expectOne("/api/auth/config");
 
     expect(req.request.headers.has("Authorization")).toBeFalse();
     req.flush({});
@@ -69,7 +70,7 @@ describe("authInterceptor", () => {
 
     TestBed.configureTestingModule({
       providers: [
-        provideHttpClient(withInterceptors([authInterceptor])),
+        provideHttpClient(withXhr(), withInterceptors([authInterceptor])),
         provideHttpClientTesting(),
         { provide: AuthService, useValue: authStub },
       ],
@@ -79,7 +80,7 @@ describe("authInterceptor", () => {
     const controller = TestBed.inject(HttpTestingController);
 
     http.get("/api/dashboard").subscribe();
-    const req = controller.expectOne("/dashboard");
+    const req = controller.expectOne("/api/dashboard");
 
     expect(req.request.headers.has("Authorization")).toBeFalse();
     req.flush({});

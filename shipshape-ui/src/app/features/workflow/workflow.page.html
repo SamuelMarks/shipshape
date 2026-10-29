@@ -232,13 +232,12 @@
               <h3 class="card-title">File tree</h3>
               <span class="tag">{{ files().length }} files</span>
             </div>
-            <div class="filetree" role="list">
+            <div class="filetree" role="group" aria-label="Changed files">
               @for (node of fileTree(); track node.id) { @if (node.kind ===
               'dir') {
               <div
                 class="filetree-row is-dir"
                 [style.padding-left.px]="node.depth * 14"
-                role="listitem"
               >
                 <span class="filetree-name">{{ node.label }}</span>
               </div>
@@ -263,11 +262,12 @@
           </div>
 
           <div class="workspace-editor">
-            <div class="tab-row" role="tablist">
+            <div class="tab-row" role="tablist" aria-label="Workspace view">
               <button
                 type="button"
                 class="tab-button"
                 [class.is-active]="activeTab() === 'edit'"
+                [attr.aria-selected]="activeTab() === 'edit'"
                 (click)="activeTab.set('edit')"
                 role="tab"
               >
@@ -277,6 +277,7 @@
                 type="button"
                 class="tab-button"
                 [class.is-active]="activeTab() === 'diff'"
+                [attr.aria-selected]="activeTab() === 'diff'"
                 (click)="activeTab.set('diff')"
                 role="tab"
               >

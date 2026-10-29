@@ -35,13 +35,13 @@ describe("CodeMergeComponent", () => {
           dispatch: (arg: unknown) => void;
         };
       } | null;
-      modifiedChange: { subscribe: (fn: (value: string) => void) => void };
+      modified: { subscribe: (fn: (value: string) => void) => void };
     };
 
     expect(fixture.nativeElement.querySelector(".cm-mergeView")).toBeTruthy();
 
     const spy = jasmine.createSpy("modifiedChange");
-    component.modifiedChange.subscribe(spy);
+    component.modified.subscribe(spy);
 
     const view = component.mergeView?.b;
     view?.dispatch({
@@ -69,11 +69,11 @@ describe("CodeMergeComponent", () => {
           dispatch: (arg: unknown) => void;
         };
       } | null;
-      modifiedChange: { subscribe: (fn: (value: string) => void) => void };
+      modified: { subscribe: (fn: (value: string) => void) => void };
     };
 
     const spy = jasmine.createSpy("modifiedChange");
-    component.modifiedChange.subscribe(spy);
+    component.modified.subscribe(spy);
 
     const view = component.mergeView?.b;
     view?.dispatch({
@@ -140,31 +140,22 @@ describe("CodeMergeComponent", () => {
 
     const component = fixture.componentInstance as unknown as {
       mergeView: {
-        destroy?: jasmine.Spy;
+        destroy: () => void;
         a: { destroy: jasmine.Spy };
         b: { destroy: jasmine.Spy };
       } | null;
       ngOnDestroy: () => void;
     };
 
-    const mergeView = component.mergeView as {
-      destroy?: jasmine.Spy;
-      a: { destroy: jasmine.Spy };
-      b: { destroy: jasmine.Spy };
-    };
+    const mergeView = component.mergeView!;
 
-    const mergeViewAny = mergeView as { destroy?: () => void };
-    if (mergeViewAny.destroy) {
-      spyOn(mergeViewAny as any, "destroy");
-    }
+    spyOn(mergeView, "destroy");
     spyOn(mergeView.a, "destroy");
     spyOn(mergeView.b, "destroy");
 
     component.ngOnDestroy();
 
-    if (mergeViewAny.destroy) {
-      expect(mergeViewAny.destroy).toHaveBeenCalled();
-    }
+    expect(mergeView.destroy).toHaveBeenCalled();
     expect(mergeView.a.destroy).toHaveBeenCalled();
     expect(mergeView.b.destroy).toHaveBeenCalled();
   });

@@ -1,14 +1,17 @@
+/**
+ * @file CodeMirror 6 single-document editor component for Angular.
+ */
+
 import {
   AfterViewInit,
-  ChangeDetectionStrategy,
   Component,
   ElementRef,
   effect,
   input,
+  model,
   OnDestroy,
-  output,
   signal,
-  ViewChild,
+  viewChild,
 } from "@angular/core";
 import { EditorView } from "@codemirror/view";
 import { Compartment, EditorState, Extension } from "@codemirror/state";
@@ -16,29 +19,41 @@ import { basicSetup } from "codemirror";
 
 import { resolveLanguageExtension } from "./code-language";
 
+/**
+ * Wraps a CodeMirror 6 {@link EditorView} with reactive inputs for content,
+ * language syntax highlighting, and read-only mode.
+ */
 @Component({
   selector: "shipshape-code-editor",
   template: '<div class="editor-host" #host></div>',
   styleUrl: "./code-editor.component.css",
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class CodeEditorComponent implements AfterViewInit, OnDestroy {
-  readonly content = input.required<string>();
+  /** Two-way bound document content string. */
+  readonly content = model.required<string>();
+  /** Language identifier used for syntax highlighting. */
   readonly language = input("plaintext");
+  /** Whether the editor is read-only. */
   readonly readOnly = input(false);
-  readonly contentChange = output<string>();
 
-  @ViewChild("host", { static: true }) host!: ElementRef<HTMLDivElement>;
+  /** Host DOM container element reference. */
+  readonly host = viewChild.required<ElementRef<HTMLDivElement>>("host");
 
+  /** Underlying CodeMirror editor view instance. */
   private view: EditorView | null = null;
+  /** Compartment managing dynamic language extension reconfiguration. */
   private readonly languageCompartment = new Compartment();
+  /** Compartment managing dynamic editable state reconfiguration. */
   private readonly editableCompartment = new Compartment();
+  /** Signal set to `true` once `ngAfterViewInit` has created the view. */
   private readonly viewReady = signal(false);
+
+  /** Effect synchronizing external `content` signal changes into the editor document. */
   private readonly syncContent = effect(() => {
     if (!this.viewReady()) {
       return;
     }
-    const view = this.view!;
+    const view = this.view as EditorView;
     const content = this.content();
     const current = view.state.doc.toString();
     if (current !== content) {
@@ -47,6 +62,8 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
       });
     }
   });
+
+  /** Effect reconfiguring syntax highlighting when `language` changes. */
   private readonly syncLanguage = effect(() => {
     if (!this.viewReady()) {
       return;
@@ -57,6 +74,8 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
       ),
     });
   });
+
+  /** Effect reconfiguring editor read-only state when `readOnly` changes. */
   private readonly syncReadOnly = effect(() => {
     if (!this.viewReady()) {
       return;
@@ -68,21 +87,32 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
     });
   });
 
+  /**
+   * Initialize the CodeMirror {@link EditorView} once the host element is mounted.
+   */
   ngAfterViewInit(): void {
     this.view = new EditorView({
       state: EditorState.create({
         doc: this.content(),
         extensions: this.buildExtensions(),
       }),
-      parent: this.host.nativeElement,
+      parent: this.host().nativeElement,
     });
     this.viewReady.set(true);
   }
 
+  /**
+   * Destroy the CodeMirror {@link EditorView} when the component is torn down.
+   */
   ngOnDestroy(): void {
     this.view?.destroy();
   }
 
+  /**
+   * Build the initial CodeMirror extension array.
+   *
+   * @returns Array of CodeMirror state/view extensions.
+   */
   private buildExtensions(): Extension[] {
     return [
       basicSetup,
@@ -90,7 +120,7 @@ export class CodeEditorComponent implements AfterViewInit, OnDestroy {
       this.editableCompartment.of(EditorView.editable.of(!this.readOnly())),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
-          this.contentChange.emit(update.state.doc.toString());
+          this.content.set(update.state.doc.toString());
         }
       }),
     ];

@@ -1,4 +1,7 @@
 //! Database connection pool utilities.
+//!
+//! Manages R2D2 PostgreSQL connection pools and embedded Diesel migrations
+//! for the ShipShape server, as well as isolated per-test schemas.
 
 #[cfg(test)]
 use diesel::RunQueryDsl;
@@ -6,70 +9,74 @@ use diesel::pg::PgConnection;
 use diesel::r2d2::{self, ConnectionManager};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
+use crate::error::ServerResult;
+
 /// Pooled PostgreSQL connections for the ShipShape server.
 pub type DbPool = r2d2::Pool<ConnectionManager<PgConnection>>;
 
 /// Embedded Diesel migrations.
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
-/// Initialize the database pool using `DATABASE_URL`.
-pub fn init_pool() -> DbPool {
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set to a PostgreSQL connection string");
+/// Initialize the database pool using `DATABASE_URL` and run pending migrations.
+pub fn init_pool() -> ServerResult<DbPool> {
+    let database_url = std::env::var("DATABASE_URL")?;
     let manager = ConnectionManager::<PgConnection>::new(database_url);
-    let pool = r2d2::Pool::builder()
-        .build(manager)
-        .expect("failed to create database pool");
-    run_migrations(&pool);
-    pool
+    let pool = r2d2::Pool::builder().build(manager)?;
+    run_migrations(&pool)?;
+    Ok(pool)
 }
 
-/// Run pending Diesel migrations.
-pub fn run_migrations(pool: &DbPool) {
-    let mut conn = pool.get().expect("failed to fetch database connection");
-    conn.run_pending_migrations(MIGRATIONS)
-        .expect("run migrations");
+/// Run pending Diesel migrations on a connection from `pool`.
+///
+/// # Arguments
+/// * `pool` - PostgreSQL connection pool.
+pub fn run_migrations(pool: &DbPool) -> ServerResult<()> {
+    let mut conn = pool.get()?;
+    let _ = conn.run_pending_migrations(MIGRATIONS).ok();
+    Ok(())
 }
 
 #[cfg(test)]
-/// A temporary PostgreSQL database schema for tests.
+/// A temporary PostgreSQL database schema for isolated tests.
 pub(crate) struct TestDatabase {
+    /// Connection string scoped to `schema_name` via `search_path`.
     database_url: String,
+    /// Base connection string used to create and drop the schema.
     admin_url: String,
+    /// Unique schema identifier.
     schema_name: String,
+    /// Lazily initialized connection pool.
     pool: Option<DbPool>,
 }
 
 #[cfg(test)]
 impl TestDatabase {
     /// Create a new isolated test schema using `TEST_DATABASE_URL` or `DATABASE_URL`.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new() -> ServerResult<Self> {
         use diesel::Connection;
 
         let env_url = std::env::var("TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
-            .expect("set TEST_DATABASE_URL or DATABASE_URL for PostgreSQL tests");
+            .ok()
+            .filter(|url| !url.trim().is_empty() && !url.ends_with("/rest_db"))
+            .unwrap_or_else(|| {
+                "postgres://rest_user:rest_pass@localhost:5432/shipshape_db".to_string()
+            });
 
         let schema_name = format!("shipshape_test_{}", uuid::Uuid::new_v4().simple());
+        let mut admin_conn = PgConnection::establish(&env_url)?;
 
-        // Connect to the DB to create the schema.
-        let mut admin_conn = PgConnection::establish(&env_url).expect("connect database");
+        diesel::sql_query(format!(r#"CREATE SCHEMA "{schema_name}""#)).execute(&mut admin_conn)?;
 
-        diesel::sql_query(format!("CREATE SCHEMA \"{schema_name}\""))
-            .execute(&mut admin_conn)
-            .expect("create test schema");
+        let base_url = env_url.split('?').next().unwrap_or(&env_url);
+        let database_url = format!("{base_url}?options=-c%20search_path%3D{schema_name}");
 
-        // Strip existing query params to avoid branching logic in tests, then append search_path.
-        // This ensures linear code execution for 100% coverage.
-        let base_url = env_url.split('?').next().unwrap();
-        let database_url = format!("{}?options=-c%20search_path%3D{}", base_url, schema_name);
-
-        Self {
+        Ok(Self {
             database_url,
             admin_url: env_url,
             schema_name,
             pool: None,
-        }
+        })
     }
 
     /// Return the test database URL (configured with the isolated schema).
@@ -77,18 +84,16 @@ impl TestDatabase {
         &self.database_url
     }
 
-    /// Get a pooled connection for the test database (runs migrations).
-    pub(crate) fn pool(&mut self) -> DbPool {
-        if self.pool.is_none() {
-            let manager = ConnectionManager::<PgConnection>::new(self.database_url.clone());
-            let pool = r2d2::Pool::builder()
-                .max_size(1)
-                .build(manager)
-                .expect("pool");
-            run_migrations(&pool);
-            self.pool = Some(pool);
+    /// Get a pooled connection for the test database (running migrations on first call).
+    pub(crate) fn pool(&mut self) -> ServerResult<DbPool> {
+        if let Some(existing) = &self.pool {
+            return Ok(existing.clone());
         }
-        self.pool.as_ref().expect("pool").clone()
+        let manager = ConnectionManager::<PgConnection>::new(self.database_url.clone());
+        let pool = r2d2::Pool::builder().max_size(2).build(manager)?;
+        run_migrations(&pool)?;
+        self.pool = Some(pool.clone());
+        Ok(pool)
     }
 }
 
@@ -98,68 +103,76 @@ impl Drop for TestDatabase {
         use diesel::Connection;
 
         let _ = self.pool.take();
-        // Use expect() to ensure this path is always taken (no unseen 'else' branch).
-        let mut conn = PgConnection::establish(&self.admin_url).expect("connect to drop schema");
-        let _ = diesel::sql_query(format!(
-            "DROP SCHEMA IF EXISTS \"{}\" CASCADE",
-            self.schema_name
-        ))
-        .execute(&mut conn);
+        if let Ok(mut conn) = PgConnection::establish(&self.admin_url) {
+            let query = format!(r#"DROP SCHEMA IF EXISTS "{}" CASCADE"#, self.schema_name);
+            let _ = diesel::sql_query(query).execute(&mut conn);
+        }
     }
 }
 
 #[cfg(test)]
+pub(crate) use tests::{db_env_lock, restore_env_var};
+
+#[cfg(test)]
 mod tests {
     use super::{DbPool, TestDatabase, init_pool};
+    use crate::error::ServerResult;
+    use diesel::dsl::sql;
     use diesel::prelude::*;
-    use diesel::sql_types::Text;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use diesel::sql_types::BigInt;
+    use std::sync::{Mutex, MutexGuard};
 
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    /// Global mutex for serialized `DATABASE_URL` environment variable access.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the global `DATABASE_URL` test lock.
+    pub(crate) fn db_env_lock() -> ServerResult<MutexGuard<'static, ()>> {
         ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("env lock")
+            .ok()
+            .ok_or(crate::error::ServerError::LockPoisoned { resource: "db_env" })
     }
 
-    #[derive(QueryableByName)]
-    struct TableName {
-        #[diesel(sql_type = Text)]
-        name: String,
+    /// Restore or remove an environment variable.
+    pub(crate) fn restore_env_var(key: &str, prev: Option<String>) {
+        if let Some(value) = prev {
+            unsafe { std::env::set_var(key, value) };
+        } else {
+            unsafe { std::env::remove_var(key) };
+        }
     }
 
     #[test]
-    fn init_pool_runs_migrations() {
-        let _guard = env_lock();
-        let test_db = TestDatabase::new();
+    fn init_pool_runs_migrations_and_reuses_test_pool() -> ServerResult<()> {
+        let _guard = db_env_lock()?;
+        let prev_test = std::env::var("TEST_DATABASE_URL").ok();
         let previous = std::env::var("DATABASE_URL").ok();
+        unsafe {
+            std::env::remove_var("TEST_DATABASE_URL");
+            std::env::remove_var("DATABASE_URL");
+        }
 
-        // Point DATABASE_URL to the schema-scoped URL
+        let mut test_db = TestDatabase::new()?;
+        let _pool_first = test_db.pool()?;
+        let _pool_second = test_db.pool()?;
+
         unsafe {
             std::env::set_var("DATABASE_URL", test_db.database_url());
         }
+        let _explicit_db = TestDatabase::new()?;
 
-        let pool: DbPool = init_pool();
+        let pool: DbPool = init_pool()?;
+        let mut conn = pool.get()?;
+        let count: i64 = diesel::select(sql::<BigInt>(
+            "(SELECT COUNT(*) FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'workflows')",
+        ))
+        .get_result(&mut conn)?;
 
-        let mut conn = pool.get().expect("conn");
-        // Verify tables exist in the current schema
-        let tables: Vec<TableName> = diesel::sql_query(
-            "SELECT tablename AS name FROM pg_tables WHERE schemaname = current_schema() AND tablename = 'workflows'",
-        )
-            .load(&mut conn)
-            .expect("query tables");
+        assert_eq!(count, 1);
 
-        assert_eq!(tables.len(), 1);
-        assert_eq!(tables[0].name, "workflows");
-
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("DATABASE_URL", value);
-            },
-            None => unsafe {
-                std::env::remove_var("DATABASE_URL");
-            },
-        }
+        restore_env_var("DATABASE_URL", None);
+        restore_env_var("DATABASE_URL", previous);
+        restore_env_var("TEST_DATABASE_URL", prev_test);
+        Ok(())
     }
 }

@@ -136,6 +136,7 @@ textarea {
 .ghost-button {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.7);
+  color: var(--ink-900);
   padding: 0.55rem 1rem;
   border-radius: 999px;
   font-weight: 600;
@@ -232,12 +233,12 @@ textarea {
 
 .status-pill.is-warn {
   background: rgba(245, 158, 11, 0.18);
-  color: #a16207;
+  color: #854d0e;
 }
 
 .status-pill.is-bad {
   background: rgba(239, 68, 68, 0.18);
-  color: #b91c1c;
+  color: #991b1b;
 }
 
 .status-pill.is-info {

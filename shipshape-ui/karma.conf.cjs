@@ -1,14 +1,46 @@
+function createJasmineZoneCompatPreprocessor() {
+  return function (content, _file, done) {
+    const patched = content
+      .replace(
+        "const loadedAsBrowserEsm =\n    globalThis.document && !globalThis.document.currentScript;",
+        "const loadedAsBrowserEsm = false;",
+      )
+      .replace(
+        "const private$ = {};\n    const j$ = {};",
+        "const private$ = {};\n    const j$ = { private: private$ };",
+      )
+      .replace("if (!writeable.includes(k))", "if (false)")
+      .replace(
+        "this.#global.addEventListener(\n        'rejectionhandled',\n        this.#onRejectionHandled\n      );",
+        "",
+      )
+      .replaceAll("Object.freeze(this);", "");
+    done(null, patched);
+  };
+}
+createJasmineZoneCompatPreprocessor.$inject = [];
+
 module.exports = function (config) {
   config.set({
     basePath: "",
-    frameworks: ["jasmine", "@angular-devkit/build-angular"],
+    frameworks: ["jasmine"],
     plugins: [
       require("karma-jasmine"),
       require("karma-chrome-launcher"),
       require("karma-jasmine-html-reporter"),
       require("karma-coverage"),
-      require("@angular-devkit/build-angular/plugins/karma"),
+      {
+        "preprocessor:jasmine-zone-compat": [
+          "factory",
+          createJasmineZoneCompatPreprocessor,
+        ],
+      },
     ],
+    preprocessors: {
+      [`${require("jasmine-core").files.path}/jasmine.js`]: [
+        "jasmine-zone-compat",
+      ],
+    },
     client: {
       jasmine: {},
       clearContext: false,

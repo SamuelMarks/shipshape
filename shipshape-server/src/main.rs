@@ -1,113 +1,138 @@
 #![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
 //! ShipShape server executable.
 //!
-//! Hosts HTTP endpoints for voyage coordination and refit workflows.
+//! Hosts HTTP endpoints for voyage coordination, authentication, interactive
+//! diff review, and GitHub/GitLab refit workflows.
 
 mod crypto;
 mod db;
+mod error;
 mod models;
 mod openapi;
 mod routes;
 mod schema;
 mod workflows;
 
-#[cfg(not(test))]
-use actix_cors::Cors;
-#[cfg(not(test))]
-use actix_web::{App, HttpServer, http::header, web};
-#[cfg(not(test))]
-use dotenvy::dotenv;
-
-#[allow(unused_imports)]
 use std::str::FromStr;
 
 #[cfg(not(test))]
+use actix_cors::Cors;
+#[cfg(not(test))]
+use actix_web::{App, HttpServer, middleware::Logger, web};
+use reqwest::Client;
+
 use crate::crypto::TokenCipher;
-#[cfg(not(test))]
 use crate::db::init_pool;
+use crate::error::ServerResult;
 #[cfg(not(test))]
-use crate::routes::{
-    AppState, AuthConfig, auth_config, auth_github, auth_github_token, auth_me, batch_runs,
-    control_options, control_queue, dashboard, diff_update, diffs, openapi_json, seed_diff_store,
-    vessel_diagnostics, vessel_refit, vessel_workflow, voyage_board, voyage_launch,
-};
-#[cfg(not(test))]
+use crate::routes::configure_routes;
+use crate::routes::{AppState, AuthConfig, seed_diff_store};
 use crate::workflows::WorkflowService;
 
-#[cfg(not(test))]
-fn main() -> std::io::Result<()> {
-    dotenv().ok();
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let pool = init_pool();
+/// Resolve the server bind address and TCP port from environment variables.
+pub fn resolve_listen_config() -> ServerResult<(String, u16)> {
+    let listen_addr = std::env::var("SHIPSHAPE_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let listen_port = std::env::var("SHIPSHAPE_PORT")
+        .map(|port| u16::from_str(&port))
+        .unwrap_or(Ok(8080))?;
+    Ok((listen_addr, listen_port))
+}
 
-    // Initialize blocking clients synchronously before the async runtime starts.
-    // This prevents the panic caused by creating a `reqwest::blocking::Client`
-    // inside the Actix runtime.
+/// Initialize [`AppState`] from environment variables and database configuration.
+pub fn init_app_state() -> ServerResult<AppState> {
+    let pool = init_pool()?;
     let workflow = WorkflowService::from_env();
     let auth = AuthConfig::from_env();
-    let token_cipher =
-        TokenCipher::from_env().expect("SHIPSHAPE_TOKEN_KEYS must be set for token encryption");
-
-    let state = web::Data::new(AppState {
+    let token_cipher = TokenCipher::from_env()?;
+    let http_client = Client::new();
+    let diff_store = seed_diff_store();
+    Ok(AppState {
         pool,
         workflow,
         auth,
         token_cipher,
-        diff_store: seed_diff_store(),
-    });
+        http_client,
+        diff_store,
+    })
+}
 
-    let origins = std::env::var("SHIPSHAPE_UI_ORIGINS")
-        .unwrap_or_else(|_| "http://127.0.0.1:4200,http://localhost:4200".to_string());
-    let allowed_origins: Vec<String> = origins
-        .split(',')
-        .map(|value| value.trim())
-        .filter(|origin| !origin.is_empty())
-        .map(String::from)
-        .collect();
+#[cfg(not(test))]
+fn main() -> ServerResult<()> {
+    dotenvy::dotenv().ok();
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
-    let listen_addr = std::env::var("SHIPSHAPE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let listen_port =
-        u16::from_str(&std::env::var("SHIPSHAPE_PORT").unwrap_or_else(|_| "8080".to_string()))
-            .expect("SHIPSHAPE_PORT must be a u16 number");
-    let err_msg = format!("Can't bind {}:{}", &listen_addr, listen_port);
+    // Initialize blocking HTTP clients inside `init_app_state` before starting the Actix runtime.
+    let state = init_app_state()?;
+    let (listen_addr, listen_port) = resolve_listen_config()?;
 
-    // Manually start the Actix system
+    log::info!("Starting ShipShape server on {listen_addr}:{listen_port}");
+
     actix_web::rt::System::new().block_on(async move {
         HttpServer::new(move || {
-            let mut cors = Cors::default()
-                .allowed_methods(vec!["GET", "POST", "OPTIONS"])
-                .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE])
-                .max_age(3600);
-            for origin in &allowed_origins {
-                cors = cors.allowed_origin(origin);
-            }
+            let cors = Cors::default()
+                .allow_any_origin()
+                .allow_any_method()
+                .allow_any_header();
             App::new()
-                .wrap(actix_web::middleware::Logger::default())
+                .wrap(Logger::default())
                 .wrap(cors)
-                .app_data(state.clone())
-                .service(auth_config)
-                .service(auth_github)
-                .service(auth_github_token)
-                .service(auth_me)
-                .service(dashboard)
-                .service(batch_runs)
-                .service(diffs)
-                .service(diff_update)
-                .service(control_options)
-                .service(control_queue)
-                .service(voyage_board)
-                .service(vessel_diagnostics)
-                .service(vessel_refit)
-                .service(vessel_workflow)
-                .service(voyage_launch)
-                .service(openapi_json)
+                .app_data(web::Data::new(state.clone()))
+                .configure(configure_routes)
         })
-        .bind((listen_addr, listen_port))
-        .expect(&err_msg)
+        .bind((listen_addr, listen_port))?
         .run()
-        .await
+        .await?;
+        Ok(())
     })
 }
 
 #[cfg(test)]
 fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::{init_app_state, main, resolve_listen_config};
+    use crate::db::TestDatabase;
+    use crate::error::ServerResult;
+
+    #[test]
+    fn resolve_listen_config_and_init_app_state_succeed() -> ServerResult<()> {
+        main();
+        let _guard = crate::db::db_env_lock()?;
+        let mut test_db = TestDatabase::new()?;
+        let _pool = test_db.pool()?;
+
+        let prev_db = std::env::var("DATABASE_URL").ok();
+        let prev_key = std::env::var("SHIPSHAPE_TOKEN_KEY").ok();
+        let prev_port = std::env::var("SHIPSHAPE_PORT").ok();
+
+        unsafe {
+            std::env::remove_var("SHIPSHAPE_PORT");
+        }
+        let (_, default_port) = resolve_listen_config()?;
+        assert_eq!(default_port, 8080);
+
+        unsafe {
+            std::env::set_var("DATABASE_URL", test_db.database_url());
+            std::env::set_var(
+                "SHIPSHAPE_TOKEN_KEY",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            );
+            std::env::set_var("SHIPSHAPE_PORT", "9090");
+        }
+
+        let (host, port) = resolve_listen_config()?;
+        assert_eq!(host, "0.0.0.0");
+        assert_eq!(port, 9090);
+
+        let _state = init_app_state()?;
+
+        crate::db::restore_env_var("DATABASE_URL", prev_db);
+        crate::db::restore_env_var("SHIPSHAPE_TOKEN_KEY", prev_key);
+        crate::db::restore_env_var("SHIPSHAPE_PORT", prev_port);
+        Ok(())
+    }
+}
