@@ -1534,6 +1534,7 @@ mod tests {
         assert!(parse_github_repo("https://example.com/other").is_err());
         assert!(parse_github_repo("https://github.com/onlyowner").is_err());
         assert!(parse_github_repo("https://github.com//repo").is_err());
+        assert!(parse_github_repo("https://github.com/owner/.git").is_err());
         Ok(())
     }
 
@@ -1767,9 +1768,7 @@ mod tests {
             pr: &PullRequestSpec,
             _branch: &str,
         ) -> ServerResult<String> {
-            if let Ok(mut guard) = self.last_body.lock() {
-                *guard = pr.body.clone();
-            }
+            let _ = self.last_body.lock().map(|mut g| *g = pr.body.clone());
             Ok("https://github.com/shipshape/mock/pull/1".to_string())
         }
     }
@@ -1803,6 +1802,14 @@ mod tests {
         let _guard = env_lock()?;
         set_env("SHIPSHAPE_KEEP_WORKSPACE", "1");
         let _keep_client = GitCommandClient::from_env();
+        set_env("SHIPSHAPE_KEEP_WORKSPACE", "true");
+        let keep_true_client = GitCommandClient::from_env();
+        keep_true_client.cleanup(GitWorkspace {
+            path: PathBuf::from("/tmp/shipshape-kept"),
+            managed: true,
+        })?;
+        set_env("SHIPSHAPE_KEEP_WORKSPACE", "false");
+        let _keep_false_client = GitCommandClient::from_env();
         remove_env("SHIPSHAPE_KEEP_WORKSPACE");
         let client = GitCommandClient::from_env();
         let missing_dir = temp_dir();
@@ -2115,7 +2122,7 @@ mod tests {
         assert!(gl_client.ensure_project(&gitlab).is_err());
         gl_create_500.delete();
 
-        let gl_create_201 = server.mock(|when, then| {
+        let mut gl_create_201 = server.mock(|when, then| {
             when.method(POST).path("/api/v4/projects");
             then.status(201)
                 .header("content-type", "application/json")
@@ -2124,6 +2131,24 @@ mod tests {
         gl_client.ensure_project(&gitlab)?;
         gl_lookup_404.assert_calls(4);
         gl_create_201.assert();
+        gl_create_201.delete();
+
+        let mut gl_create_409 = server.mock(|when, then| {
+            when.method(POST).path("/api/v4/projects");
+            then.status(409)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({"message": "already exists"}));
+        });
+        gl_client.ensure_project(&gitlab)?;
+        gl_create_409.assert();
+        gl_create_409.delete();
+
+        let _gl_create_root_201 = server.mock(|when, then| {
+            when.method(POST).path("/api/v4/projects");
+            then.status(201)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!({"id": 100}));
+        });
 
         // Root-level project without namespace
         let root_gitlab = GitLabSpec {

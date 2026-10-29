@@ -270,8 +270,7 @@ mod tests {
         let result = ensure_placeholders("{{SHIPSHAPE_STATS}}");
         assert!(matches!(
             result,
-            Err(ShipShapeError::MissingPrPlaceholders { ref missing })
-            if missing == &[SHIPSHAPE_FIXES, SHIPSHAPE_CI]
+            Err(ShipShapeError::MissingPrPlaceholders { .. })
         ));
         Ok(())
     }

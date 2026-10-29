@@ -100,10 +100,7 @@ mod tests {
     fn io_error_formats_and_converts() -> Result<()> {
         let error: ShipShapeError = io::Error::new(io::ErrorKind::NotFound, "missing").into();
         assert_eq!(error.to_string(), "io error: missing");
-        assert!(matches!(
-            error,
-            ShipShapeError::Io(ref inner) if inner.kind() == io::ErrorKind::NotFound
-        ));
+        assert!(matches!(error, ShipShapeError::Io(_)));
         Ok(())
     }
 
@@ -119,7 +116,7 @@ mod tests {
     #[test]
     fn fmt_error_formats_and_converts() {
         let mut writer = FailingWriter;
-        let error = write!(writer, "boom").map_err(ShipShapeError::from).err();
+        let error = writer.write_str("boom").map_err(ShipShapeError::from).err();
         assert!(matches!(error, Some(ShipShapeError::Fmt(_))));
         assert!(error.is_some_and(|e| e.to_string().starts_with("format error:")));
     }

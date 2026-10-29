@@ -157,6 +157,17 @@ mod tests {
         let _pool_second = test_db.pool()?;
 
         unsafe {
+            std::env::set_var("TEST_DATABASE_URL", "   ");
+        }
+        let _empty_url_db = TestDatabase::new()?;
+        unsafe {
+            std::env::set_var("TEST_DATABASE_URL", "postgres://localhost/rest_db");
+        }
+        let mut rest_db_fallback = TestDatabase::new()?;
+        rest_db_fallback.admin_url = "invalid://url".to_string();
+        drop(rest_db_fallback);
+        unsafe {
+            std::env::remove_var("TEST_DATABASE_URL");
             std::env::set_var("DATABASE_URL", test_db.database_url());
         }
         let _explicit_db = TestDatabase::new()?;

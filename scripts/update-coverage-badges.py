@@ -80,6 +80,7 @@ def run(
         env=effective_env,
         text=True,
         capture_output=capture_output,
+        check=False,
     )
     if result.returncode != 0:
         if capture_output:
@@ -119,54 +120,52 @@ def compute_test_coverage(
     """Compute test coverage via cargo llvm-cov across all crates and return (formatted_percent, float_percent)."""
     coverage_dir = ROOT / "target/llvm-cov"
     coverage_dir.mkdir(parents=True, exist_ok=True)
+    coverage_path = coverage_dir / "coverage.json"
 
-    crates = [
-        ("shipshape-core", ["--lib"]),
-        ("shipshape-cli", ["--bins"]),
-        ("shipshape-server", ["--bins"]),
-    ]
+    if refresh or not coverage_path.exists():
+        shutil.rmtree(ROOT / "target/llvm-cov-target", ignore_errors=True)
+        cmd = [
+            "cargo",
+            "+nightly",
+            "llvm-cov",
+            "--workspace",
+            "--all-features",
+            "--json",
+            "--summary-only",
+            "--branch",
+            "--output-path",
+            str(coverage_path),
+        ]
+        if strict:
+            cmd.extend(
+                [
+                    "--fail-under-lines",
+                    "100",
+                    "--fail-under-functions",
+                    "100",
+                ]
+            )
+        run(cmd)
 
-    total_lines = 0
-    covered_lines = 0
+    payload = json.loads(coverage_path.read_text(encoding="utf-8"))
+    data = payload.get("data", [])
+    if not data:
+        raise SystemExit("Coverage payload missing data section.")
+    totals = data[0].get("totals", {})
+    lines = totals.get("lines", {})
+    count = lines.get("count")
+    covered = lines.get("covered")
+    if count is None or covered is None:
+        raise SystemExit("Line coverage counts missing.")
+    if strict:
+        branches = totals.get("branches", {})
+        b_covered = branches.get("covered")
+        b_count = branches.get("count")
+        if b_covered is not None and b_count is not None and b_covered != b_count:
+            raise SystemExit(f"Branch coverage {b_covered}/{b_count} below 100%.")
 
-    for crate_name, target_flags in crates:
-        coverage_path = coverage_dir / f"{crate_name}.json"
-        if refresh or not coverage_path.exists():
-            run(["cargo", "llvm-cov", "clean", "--workspace"])
-            cmd = [
-                "cargo",
-                "llvm-cov",
-                "-p",
-                crate_name,
-                *target_flags,
-                "--all-features",
-                "--json",
-                "--summary-only",
-                "--output-path",
-                str(coverage_path),
-            ]
-            if strict:
-                cmd.extend(
-                    [
-                        "--fail-under-lines",
-                        "100",
-                        "--fail-under-functions",
-                        "100",
-                    ]
-                )
-            run(cmd)
-        payload = json.loads(coverage_path.read_text(encoding="utf-8"))
-        data = payload.get("data", [])
-        if not data:
-            raise SystemExit(f"Coverage payload for {crate_name} missing data section.")
-        totals = data[0].get("totals", {})
-        lines = totals.get("lines", {})
-        count = lines.get("count")
-        covered = lines.get("covered")
-        if count is None or covered is None:
-            raise SystemExit(f"Line coverage counts missing for {crate_name}.")
-        total_lines += int(count)
-        covered_lines += int(covered)
+    total_lines = int(count)
+    covered_lines = int(covered)
 
     pct = 100.0 if total_lines == 0 else (covered_lines / total_lines) * 100.0
     if pct >= 99.95:
@@ -241,7 +240,7 @@ def update_readme(badge_line: str) -> bool:
             rf"{re.escape(BADGE_START)}.*?{re.escape(BADGE_END)}",
             block,
             content,
-            flags=re.S,
+            flags=re.DOTALL,
         )
     else:
         lines = content.splitlines()

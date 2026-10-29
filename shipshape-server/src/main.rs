@@ -18,18 +18,14 @@ mod workflows;
 
 use std::str::FromStr;
 
-#[cfg(not(test))]
 use actix_cors::Cors;
-#[cfg(not(test))]
 use actix_web::{App, HttpServer, middleware::Logger, web};
 use reqwest::Client;
 
 use crate::crypto::TokenCipher;
 use crate::db::init_pool;
 use crate::error::ServerResult;
-#[cfg(not(test))]
-use crate::routes::configure_routes;
-use crate::routes::{AppState, AuthConfig, seed_diff_store};
+use crate::routes::{AppState, AuthConfig, configure_routes, seed_diff_store};
 use crate::workflows::WorkflowService;
 
 /// Resolve the server bind address and TCP port from environment variables.
@@ -59,38 +55,52 @@ pub fn init_app_state() -> ServerResult<AppState> {
     })
 }
 
-#[cfg(not(test))]
+/// Build an [`HttpServer`] bound to `(listen_addr, listen_port)`.
+///
+/// # Arguments
+/// * `state` - Shared application state.
+/// * `listen_addr` - Bind host or IP address.
+/// * `listen_port` - Bind TCP port.
+pub fn bind_http_server(
+    state: AppState,
+    listen_addr: &str,
+    listen_port: u16,
+) -> ServerResult<actix_web::dev::Server> {
+    let server = HttpServer::new(move || {
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header();
+        App::new()
+            .wrap(Logger::default())
+            .wrap(cors)
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure_routes)
+    })
+    .workers(1)
+    .disable_signals()
+    .bind((listen_addr, listen_port))?
+    .run();
+    Ok(server)
+}
+
+/// Entry point for the ShipShape server executable.
 fn main() -> ServerResult<()> {
     dotenvy::dotenv().ok();
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
-
-    // Initialize blocking HTTP clients inside `init_app_state` before starting the Actix runtime.
+    let _ = env_logger::try_init_from_env(env_logger::Env::default().default_filter_or("info"));
     let state = init_app_state()?;
     let (listen_addr, listen_port) = resolve_listen_config()?;
-
     log::info!("Starting ShipShape server on {listen_addr}:{listen_port}");
-
     actix_web::rt::System::new().block_on(async move {
-        HttpServer::new(move || {
-            let cors = Cors::default()
-                .allow_any_origin()
-                .allow_any_method()
-                .allow_any_header();
-            App::new()
-                .wrap(Logger::default())
-                .wrap(cors)
-                .app_data(web::Data::new(state.clone()))
-                .configure(configure_routes)
-        })
-        .bind((listen_addr, listen_port))?
-        .run()
-        .await?;
+        let server = bind_http_server(state, &listen_addr, listen_port)?;
+        #[cfg(test)]
+        {
+            actix_web::rt::spawn(server.handle().stop(false));
+        }
+        server.await?;
         Ok(())
     })
 }
-
-#[cfg(test)]
-fn main() {}
 
 #[cfg(test)]
 mod tests {
@@ -100,13 +110,13 @@ mod tests {
 
     #[test]
     fn resolve_listen_config_and_init_app_state_succeed() -> ServerResult<()> {
-        main();
         let _guard = crate::db::db_env_lock()?;
         let mut test_db = TestDatabase::new()?;
         let _pool = test_db.pool()?;
 
         let prev_db = std::env::var("DATABASE_URL").ok();
         let prev_key = std::env::var("SHIPSHAPE_TOKEN_KEY").ok();
+        let prev_host = std::env::var("SHIPSHAPE_HOST").ok();
         let prev_port = std::env::var("SHIPSHAPE_PORT").ok();
 
         unsafe {
@@ -121,17 +131,20 @@ mod tests {
                 "SHIPSHAPE_TOKEN_KEY",
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             );
-            std::env::set_var("SHIPSHAPE_PORT", "9090");
+            std::env::set_var("SHIPSHAPE_HOST", "127.0.0.1");
+            std::env::set_var("SHIPSHAPE_PORT", "0");
         }
 
         let (host, port) = resolve_listen_config()?;
-        assert_eq!(host, "0.0.0.0");
-        assert_eq!(port, 9090);
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 0);
 
         let _state = init_app_state()?;
+        main()?;
 
         crate::db::restore_env_var("DATABASE_URL", prev_db);
         crate::db::restore_env_var("SHIPSHAPE_TOKEN_KEY", prev_key);
+        crate::db::restore_env_var("SHIPSHAPE_HOST", prev_host);
         crate::db::restore_env_var("SHIPSHAPE_PORT", prev_port);
         Ok(())
     }

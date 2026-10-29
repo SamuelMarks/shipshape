@@ -983,6 +983,15 @@ mod tests {
                 Err(CliError::AuthStoragePathUnavailable)
             ));
         }
+        {
+            let _g1 = EnvGuard::set("SHIPSHAPE_AUTH_PATH", Some("   "));
+            let _g2 = EnvGuard::set("XDG_CONFIG_HOME", Some("   "));
+            let _g3 = EnvGuard::set("HOME", Some("   "));
+            assert!(matches!(
+                auth_store_path(None),
+                Err(CliError::AuthStoragePathUnavailable)
+            ));
+        }
         Ok(())
     }
 
@@ -998,10 +1007,15 @@ mod tests {
         let verify_complete = format!("{base_url}/login/device?code=ABCD-1234");
 
         let server = tokio::spawn(async move {
-            for step in 0..4 {
+            for step in 0..7 {
                 let (mut stream, _) = listener.accept().await?;
                 let mut buf = [0u8; 4096];
                 let _ = stream.read(&mut buf).await;
+                if step >= 4 {
+                    let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\nConnection: close\r\n\r\nboom";
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    continue;
+                }
                 let body = match step {
                     0 => format!(
                         r#"{{"clientId":"cid","authorizeUrl":"{authorize_url}","scopes":["read:user","repo"]}}"#
@@ -1028,11 +1042,28 @@ mod tests {
         let root = std::env::temp_dir().join("shipshape_cli_mock_http_login");
         let auth_path = root.join("nested").join("auth.json");
         let args = LoginArgs {
-            server_url: base_url,
+            server_url: base_url.clone(),
             auth_path: Some(auth_path.clone()),
         };
 
         run_login(args).await?;
+
+        let client = Client::new();
+        assert!(
+            request_device_code(&client, &base_url, "cid", &[])
+                .await
+                .is_err()
+        );
+        assert!(
+            poll_device_token(&client, &base_url, "cid", "dev")
+                .await
+                .is_err()
+        );
+        assert!(
+            exchange_token_for_session(&client, &base_url, "gh")
+                .await
+                .is_err()
+        );
         let _ = server.await;
 
         let contents = tokio::fs::read_to_string(&auth_path).await?;

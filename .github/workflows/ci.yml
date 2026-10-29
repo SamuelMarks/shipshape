@@ -32,8 +32,7 @@ jobs:
       - name: Rust coverage
         run: |
           mkdir -p target/llvm-cov
-          cargo llvm-cov --workspace --all-features --json --summary-only --branch --output-path target/llvm-cov/coverage.json
-          # --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100
+          cargo llvm-cov --workspace --all-features --json --summary-only --branch --fail-under-lines 100 --fail-under-functions 100 --output-path target/llvm-cov/coverage.json
         env:
           DATABASE_URL: postgres://rest_user:rest_pass@localhost:5432/shipshape_db
           POSTGRES_HOST: localhost
@@ -68,11 +67,11 @@ jobs:
             percent = branches.get("percent")
             if percent is None:
               sys.exit("Branch coverage summary missing percent.")
-          if percent < 100.0:
-            sys.exit(f"Branch coverage {percent:.2f}% below 100%.")
+            if percent < 100.0:
+              sys.exit(f"Branch coverage {percent:.2f}% below 100%.")
           PY
       - name: Rust doc coverage
-        run: RUSTDOCFLAGS="-D missing_docs" cargo doc --workspace --no-deps
+        run: RUSTDOCFLAGS="-D missing_docs -D warnings" cargo doc --workspace --no-deps --document-private-items
 
   ui-coverage:
     runs-on: ubuntu-latest

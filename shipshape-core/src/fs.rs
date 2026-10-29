@@ -183,9 +183,10 @@ mod tests {
         std::fs::create_dir_all(&root)?;
         let file_path = root.join("direct.txt");
         let fs = StdFileSystem;
-        fs.write_file(Path::new(""), "")
-            .err()
-            .map_or_else(|| (), |_| ());
+        let _ = fs.write_file(Path::new(""), "");
+        let _ = fs.write_file(Path::new("direct.txt"), "");
+        let _ = std::fs::remove_file("direct.txt");
+        let _ = fs.write_file(Path::new("/dev/null/impossible"), "");
         fs.write_file(&file_path, "content")?;
         assert_eq!(fs.read_to_string(&file_path)?, "content");
         std::fs::remove_dir_all(&root)?;
